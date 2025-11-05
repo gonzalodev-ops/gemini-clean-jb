@@ -10,40 +10,35 @@ const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const model = 'gemini-2.5-flash-image';
 
-const prompt = `You are a precision digital imaging specialist for e-commerce. Your sole function is to prepare product photos of silver jewelry for a high-end catalog according to a strict technical specification. The goal is technical perfection and consistency, NOT artistic interpretation.
+const prompt = `You are a robotic image processor. Your only function is to execute a precise, non-creative, technical workflow. You must follow these instructions verbatim. DO NOT interpret, create, or "improve" beyond the defined steps.
 
-Follow this sequence of operations exactly:
+**--- CORE DIRECTIVE: REPLICATE EXACTLY ---**
+The jewelry item in the output image MUST be the IDENTICAL object from the input. It is a critical failure to alter the object's form or perspective in any way.
 
-**Step 1: MASKING & ISOLATION**
-- Create a perfect, pixel-precise mask of the *entire* jewelry piece.
-- This mask MUST include every single part visible in the original image, especially thin chains, clasps, and any other delicate components.
-- **Under no circumstances is any part of the jewelry, no matter how small, to be excluded or cropped.**
+**--- STRICT PROHIBITIONS (ZERO TOLERANCE) ---**
+1.  **DO NOT ADD GEOMETRY:** Do not invent or add parts that are not clearly visible in the original photo (e.g., do not add earring posts if they are not visible).
+2.  **DO NOT REMOVE GEOMETRY:** Do not crop, shorten, or delete any part of the jewelry that is visible in the original photo (e.g., do not remove visible earring posts).
+3.  **DO NOT CHANGE PERSPECTIVE:** The jewelry must maintain its original orientation, angle, and perspective. If the original is at a 3/4 angle, the output MUST be at the exact same 3/4 angle. Do not "straighten" or "flatten" the object to face the camera. Replicate the original perspective.
+4.  **DO NOT TRANSFORM:** Do not rotate, flip, resize, or distort the object's original aspect ratio.
 
-- **SPECIAL INSTRUCTION FOR EARRINGS:** Pay extreme attention to the earring posts (the straight or curved metal part that goes through the ear, sometimes called the 'little leg'). It is a critical error to crop, shorten, or alter the shape of these posts. The mask must trace their full, original length and shape with maximum precision. Treat the posts as an essential part of the jewelry.
+**--- TECHNICAL PROCESSING WORKFLOW ---**
 
-**Step 2: COLOR CORRECTION (METAL ONLY)**
-- The jewelry is made of silver.
-- Your primary task is to **completely neutralize and remove any yellow, gold, or warm color casts** from the metallic parts.
-- The final metal must look like clean, bright, neutral silver.
-- **CRITICAL: Do NOT alter the original hue of any gemstones.**
+**Step 1: MASK GENERATION**
+- Create a pixel-perfect mask of the jewelry item exactly as it appears in the source image. This mask is a direct cutout.
 
-**Step 3: ENHANCEMENT**
-- Apply subtle sharpening and clarity enhancements to the entire isolated piece to improve detail.
-- Gently increase the specular highlights (sparkle) on gemstones without oversaturating them or changing their color.
+**Step 2: ENHANCEMENT OF ISOLATED ITEM**
+- Isolate the jewelry using the mask.
+- On the isolated item, perform the following:
+    - **Metal Color Correction:** Neutralize and remove any yellow/gold color cast from all SILVER surfaces. The metal must appear as clean, bright, neutral-toned silver.
+    - **Preserve Gem Colors:** Do NOT alter the hue of gemstones or enameled parts.
+    - **Detail Enhancement:** Apply a subtle sharpening and clarity adjustment to improve detail. Gently boost specular highlights for "sparkle".
 
-**Step 4: COMPOSITION & EXPORT**
-- Create a new square canvas (1:1 aspect ratio).
-- Fill this canvas with the solid color with hex code #B0C4DE (foggy blue).
-- Place the fully processed jewelry piece from the previous steps perfectly in the center of this canvas.
-- **The jewelry MUST retain its original orientation and aspect ratio. Do not rotate, flip, or distort it in any way.**
-- Ensure there is a balanced, visually pleasing margin of the blue background around the entire piece.
+**Step 3: FINAL COMPOSITION**
+- Create a new square (1:1 aspect ratio) canvas.
+- Fill the canvas with a solid background color: hex code #B0C4DE.
+- Place the enhanced, isolated jewelry item in the center of the canvas. The item must be exactly as it was in the original photo in terms of its angle and orientation.
 
-**CRITICAL FAILURE CONDITIONS (AVOID AT ALL COSTS):**
-1.  **Cropping:** ANY part of the original jewelry is missing. This specifically includes cutting off or shortening earring posts.
-2.  **Rotation:** The orientation of the jewelry is changed.
-3.  **Color Error:** Golden/yellow tints remain on the silver, or gemstone colors are altered.
-
-Return ONLY the final, edited image data.`;
+Output ONLY the final, processed image data. Do not output any text.`;
 
 export async function enhanceJewelryImage(base64Image: string, mimeType: string): Promise<string | null> {
     try {

@@ -1,82 +1,72 @@
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { 
-  generateCatalogImage, 
-  generateThematicImages,
-  generatePresentationVideo,
-  checkVideoOperation
+    generateCatalogImage, 
+    generateThematicImages,
+    generatePresentationVideo,
+    checkVideoOperation
 } from '../services/geminiService';
 
-async function securityCheck(request: VercelRequest, response: VercelResponse): Promise<boolean> {
-  if (request.method !== 'POST') {
-    response.status(405).json({ error: 'Method Not Allowed' });
-    return false;
-  }
+// This is the API key that the frontend uses to authenticate with this serverless function.
+// It MUST match the value of SERVER_API_KEY in App.tsx.
+const SERVER_API_KEY = process.env.SERVER_API_KEY;
 
-  const apiKey = request.headers.authorization?.split(' ')[1];
-  const SERVER_API_KEY = process.env.SERVER_API_KEY;
-
-  if (!SERVER_API_KEY) {
-    console.error("SERVER_API_KEY is not configured on the server.");
-    response.status(500).json({ error: 'Internal Server Error: Missing server configuration.' });
-    return false;
-  }
-
-  if (!apiKey || apiKey !== SERVER_API_KEY) {
-    response.status(401).json({ error: 'Unauthorized: Invalid API Key' });
-    return false;
-  }
-  return true;
-}
-
-export default async function handler(
-  request: VercelRequest,
-  response: VercelResponse,
-) {
-  if (!(await securityCheck(request, response))) return;
-
-  const { mode } = request.body;
-
-  try {
-    switch (mode) {
-      case 'catalog':
-      case 'thematic': {
-        const { base64Image, mimeType, userTheme } = request.body;
-        if (!base64Image || !mimeType) {
-          return response.status(400).json({ error: 'Bad Request: Missing image data.' });
-        }
-        if (mode === 'thematic' && (!userTheme || typeof userTheme !== 'string' || userTheme.trim().length === 0)) {
-          return response.status(400).json({ error: 'Bad Request: userTheme is required for thematic mode.' });
-        }
-        const results = mode === 'catalog'
-          ? await generateCatalogImage(base64Image, mimeType)
-          : await generateThematicImages(base64Image, mimeType, userTheme);
-        return response.status(200).json({ enhancedImages: results });
-      }
-
-      case 'video_start': {
-        const { base64Image, mimeType, prompt } = request.body;
-        if (!base64Image || !mimeType || !prompt) {
-          return response.status(400).json({ error: 'Bad Request: Missing data for video generation.' });
-        }
-        const operation = await generatePresentationVideo(base64Image, mimeType, prompt);
-        return response.status(202).json({ status: 'processing', operation });
-      }
-
-      case 'video_check': {
-        const { operation } = request.body;
-        if (!operation) {
-          return response.status(400).json({ error: 'Bad Request: Missing operation data for video check.' });
-        }
-        const result = await checkVideoOperation(operation);
-        return response.status(200).json(result);
-      }
-
-      default:
-        return response.status(400).json({ error: "Bad Request: Invalid 'mode' provided." });
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+    // 1. Check method and authentication
+    if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return res.status(405).json({ error: 'Method Not Allowed' });
     }
-  } catch (error: any) {
-    console.error(`[API Error - Mode: ${mode}] Failed to process request:`, error);
-    const statusCode = error.message.includes('Unauthorized') || error.message.includes('API key not valid') ? 401 : 500;
-    return response.status(statusCode).json({ error: error.message || 'An unexpected error occurred.' });
-  }
+
+    const authHeader = req.headers.authorization;
+    if (!SERVER_API_KEY || !authHeader || authHeader !== `Bearer ${SERVER_API_KEY}`) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // 2. Parse request body
+    const { mode, base64Image, mimeType, userTheme, prompt, operation } = req.body;
+
+    try {
+        // 3. Route to the correct service function based on 'mode'
+        switch (mode) {
+            case 'catalog': {
+                if (!base64Image || !mimeType) {
+                    return res.status(400).json({ error: 'Missing base64Image or mimeType for catalog mode' });
+                }
+                const enhancedImages = await generateCatalogImage(base64Image, mimeType);
+                return res.status(200).json({ enhancedImages });
+            }
+
+            case 'thematic': {
+                if (!base64Image || !mimeType || !userTheme) {
+                    return res.status(400).json({ error: 'Missing base64Image, mimeType, or userTheme for thematic mode' });
+                }
+                const enhancedImages = await generateThematicImages(base64Image, mimeType, userTheme);
+                return res.status(200).json({ enhancedImages });
+            }
+
+            case 'video_start': {
+                if (!base64Image || !mimeType || !prompt) {
+                    return res.status(400).json({ error: 'Missing base64Image, mimeType, or prompt for video_start mode' });
+                }
+                const videoOperation = await generatePresentationVideo(base64Image, mimeType, prompt);
+                return res.status(200).json({ operation: videoOperation });
+            }
+
+            case 'video_check': {
+                if (!operation) {
+                    return res.status(400).json({ error: 'Missing operation for video_check mode' });
+                }
+                const result = await checkVideoOperation(operation);
+                return res.status(200).json(result);
+            }
+
+            default:
+                return res.status(400).json({ error: 'Invalid mode specified' });
+        }
+    } catch (error: any) {
+        console.error(`Error in mode '${mode}':`, error);
+        // Provide a user-friendly error message
+        return res.status(500).json({ error: error.message || 'An unexpected error occurred on the server.' });
+    }
 }

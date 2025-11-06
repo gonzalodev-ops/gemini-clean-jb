@@ -1,1 +1,8 @@
-full contents of vercel.json
+
+{
+  "functions": {
+    "api/enhance.ts": {
+      "maxDuration": 60
+    }
+  }
+}

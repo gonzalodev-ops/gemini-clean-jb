@@ -1,3 +1,4 @@
+
 // FIX: Implement the serverless function handler for /api/enhance.
 // This file was previously a placeholder and caused multiple errors.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -6,7 +7,7 @@ import {
     generateThematicImages,
     generatePresentationVideo,
     checkVideoOperation
-} from '../services/geminiService';
+} from '../services/geminiService.js'; // FIX: Added .js extension
 
 /**
  * Handles API requests for image enhancement and video generation.

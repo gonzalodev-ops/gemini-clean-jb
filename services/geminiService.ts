@@ -233,7 +233,7 @@ export async function checkVideoOperation(operation: any) {
         }
         
         return {
-            status: updatedOperation.done ? 'done_no_uri'_ : 'processing',
+            status: updatedOperation.done ? 'done_no_uri' : 'processing',
             operation: updatedOperation
         };
 

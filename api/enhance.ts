@@ -7,66 +7,84 @@ import {
     checkVideoOperation
 } from '../services/geminiService';
 
-// This is the API key that the frontend uses to authenticate with this serverless function.
-// It MUST match the value of SERVER_API_KEY in App.tsx.
-const SERVER_API_KEY = process.env.SERVER_API_KEY;
+export default async function handler(
+  request: VercelRequest,
+  response: VercelResponse,
+) {
+  // --- PASO 1: Verificación de seguridad y configuración ---
+  // Esta es la verificación más importante. Si algo falla aquí, sabremos exactamente por qué.
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // 1. Check method and authentication
-    if (req.method !== 'POST') {
-        res.setHeader('Allow', 'POST');
-        return res.status(405).json({ error: 'Method Not Allowed' });
-    }
+  if (request.method !== 'POST') {
+    response.setHeader('Allow', 'POST');
+    return response.status(405).json({ error: 'Method Not Allowed' });
+  }
 
-    const authHeader = req.headers.authorization;
-    if (!SERVER_API_KEY || !authHeader || authHeader !== `Bearer ${SERVER_API_KEY}`) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
+  const { SERVER_API_KEY, API_KEY } = process.env;
 
-    // 2. Parse request body
-    const { mode, base64Image, mimeType, userTheme, prompt, operation } = req.body;
+  if (!SERVER_API_KEY) {
+    console.error("FATAL: SERVER_API_KEY environment variable is not set on Vercel.");
+    return response.status(500).json({ error: 'Error de Configuración del Servidor: Falta la clave de seguridad interna.' });
+  }
 
-    try {
-        // 3. Route to the correct service function based on 'mode'
-        switch (mode) {
-            case 'catalog': {
-                if (!base64Image || !mimeType) {
-                    return res.status(400).json({ error: 'Missing base64Image or mimeType for catalog mode' });
-                }
-                const enhancedImages = await generateCatalogImage(base64Image, mimeType);
-                return res.status(200).json({ enhancedImages });
-            }
+  if (!API_KEY) {
+    console.error("FATAL: API_KEY (Gemini API Key) environment variable is not set on Vercel.");
+    return response.status(500).json({ error: 'Error de Configuración del Servidor: La clave de la API de Gemini (API_KEY) no está configurada.' });
+  }
 
-            case 'thematic': {
-                if (!base64Image || !mimeType || !userTheme) {
-                    return res.status(400).json({ error: 'Missing base64Image, mimeType, or userTheme for thematic mode' });
-                }
-                const enhancedImages = await generateThematicImages(base64Image, mimeType, userTheme);
-                return res.status(200).json({ enhancedImages });
-            }
+  const authHeader = request.headers.authorization;
+  if (!authHeader || authHeader !== `Bearer ${SERVER_API_KEY}`) {
+    return response.status(401).json({ error: 'No Autorizado: La clave de la aplicación no es válida.' });
+  }
 
-            case 'video_start': {
-                if (!base64Image || !mimeType || !prompt) {
-                    return res.status(400).json({ error: 'Missing base64Image, mimeType, or prompt for video_start mode' });
-                }
-                const videoOperation = await generatePresentationVideo(base64Image, mimeType, prompt);
-                return res.status(200).json({ operation: videoOperation });
-            }
+  // --- PASO 2: Procesamiento de la solicitud ---
+  const { mode } = request.body;
 
-            case 'video_check': {
-                if (!operation) {
-                    return res.status(400).json({ error: 'Missing operation for video_check mode' });
-                }
-                const result = await checkVideoOperation(operation);
-                return res.status(200).json(result);
-            }
-
-            default:
-                return res.status(400).json({ error: 'Invalid mode specified' });
+  try {
+    switch (mode) {
+      case 'catalog':
+      case 'thematic': {
+        const { base64Image, mimeType, userTheme } = request.body;
+        if (!base64Image || !mimeType) {
+          return response.status(400).json({ error: 'Solicitud incorrecta: Faltan datos de la imagen.' });
         }
-    } catch (error: any) {
-        console.error(`Error in mode '${mode}':`, error);
-        // Provide a user-friendly error message
-        return res.status(500).json({ error: error.message || 'An unexpected error occurred on the server.' });
+        if (mode === 'thematic' && (!userTheme || typeof userTheme !== 'string' || userTheme.trim().length === 0)) {
+          return response.status(400).json({ error: 'Solicitud incorrecta: El modo temático requiere un tema.' });
+        }
+        
+        const results = mode === 'catalog'
+          ? await generateCatalogImage(base64Image, mimeType)
+          : await generateThematicImages(base64Image, mimeType, userTheme);
+        
+        return response.status(200).json({ enhancedImages: results });
+      }
+
+      case 'video_start': {
+        const { base64Image, mimeType, prompt } = request.body;
+        if (!base64Image || !mimeType || !prompt) {
+          return response.status(400).json({ error: 'Solicitud incorrecta: Faltan datos para la generación de video.' });
+        }
+        const operation = await generatePresentationVideo(base64Image, mimeType, prompt);
+        return response.status(202).json({ status: 'processing', operation });
+      }
+
+      case 'video_check': {
+        const { operation } = request.body;
+        if (!operation) {
+          return response.status(400).json({ error: 'Solicitud incorrecta: Falta el objeto de operación para la verificación de video.' });
+        }
+        const result = await checkVideoOperation(operation);
+        return response.status(200).json(result);
+      }
+
+      default:
+        return response.status(400).json({ error: "Solicitud incorrecta: El 'modo' proporcionado no es válido." });
     }
+  } catch (error: any) {
+    console.error(`[API Error - Modo: ${mode}]`, error);
+    // Devuelve un error más específico si es posible
+    if (error.message.includes('timeout')) {
+        return response.status(504).json({ error: 'El servidor tardó demasiado en responder. Inténtalo de nuevo.' });
+    }
+    return response.status(500).json({ error: error.message || 'Ocurrió un error inesperado en el servidor.' });
+  }
 }

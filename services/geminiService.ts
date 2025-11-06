@@ -1,6 +1,8 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const model = 'gemini-2.5-flash-image';
+const imageModel = 'gemini-2.5-flash-image';
+const videoModel = 'veo-3.1-fast-generate-preview';
+
 
 // --- PROMPT TÉCNICO PARA CATÁLOGO ---
 const catalogPrompt = `You are a precision digital imaging specialist AI. Your task is to process product photos of silver jewelry for an e-commerce catalog by following a strict, non-negotiable set of rules. You are a technical tool. Do not be creative.
@@ -66,7 +68,7 @@ const creativeStyles = [
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-async function generateWithRetry(
+async function generateImageWithRetry(
     ai: GoogleGenAI,
     base64Image: string,
     mimeType: string,
@@ -79,7 +81,7 @@ async function generateWithRetry(
     while (attempt < maxRetries) {
         try {
             const response = await ai.models.generateContent({
-                model: model,
+                model: imageModel,
                 contents: { parts: [{ inlineData: { data: base64Image, mimeType } }, { text: prompt }] },
                 config: { responseModalities: [Modality.IMAGE] },
             });
@@ -116,7 +118,7 @@ function getApiKey(): string {
     return API_KEY;
 }
 
-// --- PUBLIC SERVICE FUNCTIONS ---
+// --- PUBLIC IMAGE SERVICE FUNCTIONS ---
 
 export async function generateCatalogImage(
     base64Image: string, 
@@ -124,11 +126,10 @@ export async function generateCatalogImage(
 ): Promise<string[]> {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     try {
-        const result = await generateWithRetry(ai, base64Image, mimeType, catalogPrompt);
+        const result = await generateImageWithRetry(ai, base64Image, mimeType, catalogPrompt);
         return [result];
     } catch (error: any) {
         console.error("Error en generateCatalogImage:", error);
-        // Re-throw with a user-friendly message
         if (error.message.includes('safety')) {
             throw new Error("La solicitud fue bloqueada por políticas de seguridad de la IA.");
         }
@@ -155,12 +156,11 @@ export async function generateThematicImages(
         });
         
         const results: string[] = [];
-        // Use a for...of loop to handle async calls sequentially with delays
         for (const prompt of prompts) {
-            const result = await generateWithRetry(ai, base64Image, mimeType, prompt);
+            const result = await generateImageWithRetry(ai, base64Image, mimeType, prompt);
             results.push(result);
             if (prompts.length > 1 && prompts.indexOf(prompt) < prompts.length - 1) {
-                await delay(5000); // 5-second delay between generations
+                await delay(5000); 
             }
         }
 
@@ -176,5 +176,69 @@ export async function generateThematicImages(
             throw new Error("La solicitud fue bloqueada por políticas de seguridad. Intenta con una imagen o tema diferente.");
         }
         throw new Error(`Error al generar imágenes de temporada: ${error.message}`);
+    }
+}
+
+
+// --- PUBLIC VIDEO SERVICE FUNCTIONS ---
+
+export async function generatePresentationVideo(base64Image: string, mimeType: string, prompt: string) {
+    // A separate AI instance is created here to ensure the latest API key is used,
+    // which is crucial for features requiring user-selected keys like video generation.
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    try {
+        const operation = await ai.models.generateVideos({
+            model: videoModel,
+            prompt: prompt,
+            image: { imageBytes: base64Image, mimeType: mimeType },
+            config: {
+                numberOfVideos: 1,
+                resolution: '720p',
+                aspectRatio: '1:1'
+            }
+        });
+        return operation;
+    } catch (error: any) {
+        console.error("Error starting video generation:", error);
+        if (error.message?.includes('API key not valid')) {
+             throw new Error("API key not valid. Please select a valid API key.");
+        }
+        throw new Error(`Failed to start video generation: ${error.message}`);
+    }
+}
+
+export async function checkVideoOperation(operation: any) {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    try {
+        const updatedOperation = await ai.operations.getVideosOperation({ operation: operation });
+        
+        if (updatedOperation.done && updatedOperation.response?.generatedVideos?.[0]?.video?.uri) {
+            const downloadLink = updatedOperation.response.generatedVideos[0].video.uri;
+            const videoResponse = await fetch(`${downloadLink}&key=${getApiKey()}`);
+            if (!videoResponse.ok) {
+                throw new Error(`Failed to download video: ${videoResponse.statusText}`);
+            }
+            const videoBlob = await videoResponse.blob();
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onloadend = () => {
+                    resolve({
+                        status: 'done',
+                        videoUrl: reader.result as string
+                    });
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(videoBlob);
+            });
+        }
+        
+        return {
+            status: updatedOperation.done ? 'done_no_uri'_ : 'processing',
+            operation: updatedOperation
+        };
+
+    } catch (error: any) {
+        console.error("Error checking video operation:", error);
+        throw new Error(`Failed to check video status: ${error.message}`);
     }
 }

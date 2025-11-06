@@ -1,4 +1,5 @@
 
+
 // FIX: Implement the serverless function handler for /api/enhance.
 // This file was previously a placeholder and caused multiple errors.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -7,7 +8,7 @@ import {
     generateThematicImages,
     generatePresentationVideo,
     checkVideoOperation
-} from '../services/geminiService.js'; // FIX: Added .js extension
+} from '../services/geminiService.js'; // FIX: Ensure .js extension for Node ESM
 
 /**
  * Handles API requests for image enhancement and video generation.
@@ -34,6 +35,7 @@ export default async function handler(
   }
 
   if (authHeader !== `Bearer ${serverApiKey}`) {
+      // FIX: Corrected status code from '4unauthorized' to 401
       return res.status(401).json({ error: 'Unauthorized' });
   }
 

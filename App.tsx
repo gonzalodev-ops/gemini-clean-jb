@@ -1,500 +1,375 @@
-import React, { useReducer, useCallback, useMemo, useState, useEffect } from 'react';
-import { UploadIcon, DownloadIcon, SparklesIcon, ArrowPathIcon, PhotoIcon, VideoCameraIcon, XMarkIcon, KeyIcon, StopIcon } from './components/icons';
-import { resizeImage } from './utils';
-import ApiKeyModal from './components/ApiKeyModal';
 
-// --- CONSTANTS ---
-// Esta clave es para autorizar las peticiones del frontend a tu backend en Vercel.
-// Debe coincidir EXACTAMENTE con el valor de la variable de entorno `SERVER_API_KEY` que configures en Vercel.
-const SERVER_API_KEY = 'xPPkpdDu4A_fRL8PBRNfwKFqwsrrYXqEz3G7uVUL!xCFtT2jm_T3avo3zCPrP';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { resizeImage } from './utils';
+import ThemeSelector from './components/ThemeSelector';
+import ApiKeyModal from './components/ApiKeyModal';
+import {
+  UploadIcon,
+  SparklesIcon,
+  DownloadIcon,
+  XMarkIcon,
+  ArrowPathIcon,
+  KeyIcon,
+  PhotoIcon,
+  VideoCameraIcon,
+  StopIcon,
+} from './components/icons';
 
 // --- TYPE DEFINITIONS ---
-type ImageFile = {
+type SourceImage = {
+  url: string;
   base64: string;
   mimeType: string;
-  name: string;
 };
 
-type JobStatus = 'pending_selection' | 'awaiting_theme' | 'processing' | 'success' | 'error' | 'awaiting_video_prompt' | 'processing_video' | 'success_video';
-type VideoJobStatus = 'idle' | 'starting' | 'processing' | 'done' | 'error';
-
-
-type ImageJob = {
-  id: string;
-  originalImage: ImageFile;
-  status: JobStatus;
-  processedImages: string[];
-  processedVideoUrl: string | null;
-  error: string | null;
-  theme: string;
-  videoPrompt: string;
-  videoOperation: any | null;
-  videoStatus: VideoJobStatus;
+type LoadingState = {
+  catalog: boolean;
+  thematic: boolean;
+  video: boolean;
 };
 
-type State = {
-  jobs: ImageJob[];
+type VideoOperation = any; 
+
+type VideoResult = {
+  status: 'processing' | 'done' | 'done_no_uri' | 'failed';
+  videoUrl?: string;
+  operation?: VideoOperation;
 };
 
-type Action =
-  | { type: 'UPLOAD_BATCH'; payload: ImageFile[] }
-  | { type: 'SELECT_MODE'; payload: { jobId: string; mode: 'catalog' | 'thematic' } }
-  | { type: 'SELECT_VIDEO_MODE'; payload: { jobId: string } }
-  | { type: 'SET_JOB_THEME'; payload: { jobId: string; theme: string } }
-  | { type: 'SET_VIDEO_PROMPT'; payload: { jobId: string; prompt: string } }
-  | { type: 'PROCESS_JOB_START'; payload: { jobId: string } }
-  | { type: 'PROCESS_VIDEO_START'; payload: { jobId: string } }
-  | { type: 'PROCESS_JOB_SUCCESS'; payload: { jobId: string; processedImages: string[] } }
-  | { type: 'PROCESS_VIDEO_SUCCESS'; payload: { jobId: string; videoUrl: string } }
-  | { type: 'PROCESS_JOB_ERROR'; payload: { jobId: string; error: string } }
-  | { type: 'UPDATE_VIDEO_OPERATION'; payload: { jobId: string; operation: any } }
-  | { type: 'UPDATE_VIDEO_STATUS'; payload: { jobId: string; status: VideoJobStatus } }
-  | { type: 'RETRY_JOB'; payload: { jobId: string } }
-  | { type: 'RESET' };
+// --- HELPER FUNCTIONS ---
+async function callApi(body: object) {
+    // This key is used to authenticate the frontend with its own backend serverless function.
+    // It should be configured as an environment variable (e.g., REACT_APP_SERVER_API_KEY).
+    const serverApiKey = process.env.REACT_APP_SERVER_API_KEY;
+    if (!serverApiKey) {
+        console.error("Server API key is not configured on the client.");
+        throw new Error("La configuración del cliente es inválida. No se puede contactar al servidor.");
+    }
 
-// --- API HELPER ---
-
-async function apiFetch(body: Record<string, any>) {
     const response = await fetch('/api/enhance', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SERVER_API_KEY}`,
+            'Authorization': `Bearer ${serverApiKey}`,
         },
         body: JSON.stringify(body),
     });
-
+    
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'La respuesta de la red no fue correcta.' }));
-        throw new Error(errorData.error || `Error HTTP: ${response.status}`);
+        const errorData = await response.json().catch(() => ({ error: 'Unknown server error' }));
+        throw new Error(errorData.error || `Request failed with status ${response.status}`);
     }
+    
     return response.json();
 }
 
-// --- STATE MANAGEMENT ---
+// --- MAIN APP COMPONENT ---
+const App: React.FC = () => {
+    // --- STATE MANAGEMENT ---
+    const [sourceImage, setSourceImage] = useState<SourceImage | null>(null);
+    const [catalogImage, setCatalogImage] = useState<string | null>(null);
+    const [thematicImages, setThematicImages] = useState<string[]>([]);
+    const [videoResult, setVideoResult] = useState<VideoResult | null>(null);
+    
+    const [theme, setTheme] = useState('Navidad');
+    const [videoPrompt, setVideoPrompt] = useState('Una animación cinematográfica y elegante del producto, con suaves movimientos de cámara e iluminación de estudio.');
 
-const initialState: State = {
-  jobs: [],
-};
+    const [loading, setLoading] = useState<LoadingState>({ catalog: false, thematic: false, video: false });
+    const [error, setError] = useState<string | null>(null);
+    
+    const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+    const [hasApiKey, setHasApiKey] = useState<boolean | undefined>(undefined);
+    
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const videoCheckIntervalRef = useRef<number | null>(null);
 
-function appReducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'UPLOAD_BATCH':
-      return {
-        ...state,
-        jobs: action.payload.map(file => ({
-          id: crypto.randomUUID(),
-          originalImage: file,
-          status: 'pending_selection',
-          processedImages: [],
-          processedVideoUrl: null,
-          error: null,
-          theme: 'Navidad',
-          videoPrompt: 'Una toma elegante en cámara lenta de la joya, con efectos de luz brillante.',
-          videoOperation: null,
-          videoStatus: 'idle',
-        })),
-      };
-    case 'SELECT_MODE':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId
-            ? { ...job, status: action.payload.mode === 'thematic' ? 'awaiting_theme' : job.status }
-            : job
-        ),
-      };
-    case 'SELECT_VIDEO_MODE':
-      return {
-        ...state,
-        jobs: state.jobs.map(job => job.id === action.payload.jobId ? { ...job, status: 'awaiting_video_prompt' } : job),
-      };
-    case 'SET_JOB_THEME':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, theme: action.payload.theme } : job
-        ),
-      };
-    case 'SET_VIDEO_PROMPT':
-      return {
-        ...state,
-        jobs: state.jobs.map(job => job.id === action.payload.jobId ? { ...job, videoPrompt: action.payload.prompt } : job),
-      };
-    case 'PROCESS_JOB_START':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'processing', error: null } : job
-        ),
-      };
-    case 'PROCESS_VIDEO_START':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'processing_video', error: null, videoStatus: 'starting' } : job
-        ),
-      };
-    case 'PROCESS_JOB_SUCCESS':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'success', processedImages: action.payload.processedImages } : job
-        ),
-      };
-    case 'PROCESS_VIDEO_SUCCESS':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'success_video', videoStatus: 'done', processedVideoUrl: action.payload.videoUrl, videoOperation: null } : job
-        ),
-      };
-    case 'PROCESS_JOB_ERROR':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'error', videoStatus: 'error', error: action.payload.error } : job
-        ),
-      };
-    case 'UPDATE_VIDEO_OPERATION':
-        return {
-            ...state,
-            jobs: state.jobs.map(job =>
-                job.id === action.payload.jobId ? { ...job, videoOperation: action.payload.operation } : job
-            ),
-        };
-    case 'UPDATE_VIDEO_STATUS':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? {...job, videoStatus: action.payload.status} : job
-        ),
-      };
-    case 'RETRY_JOB':
-      return {
-        ...state,
-        jobs: state.jobs.map(job =>
-          job.id === action.payload.jobId ? { ...job, status: 'pending_selection', error: null, processedImages: [], processedVideoUrl: null, videoOperation: null, videoStatus: 'idle' } : job
-        ),
-      };
-    case 'RESET':
-      return initialState;
-    default:
-      return state;
-  }
-}
+    const isProcessing = loading.catalog || loading.thematic || loading.video;
 
-// --- UI COMPONENTS ---
-
-const Header: React.FC = () => (
-  <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-20">
-    <div className="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8 flex items-center gap-3">
-      <div className="p-2 bg-slate-800 rounded-lg">
-        <SparklesIcon className="w-6 h-6 text-white" />
-      </div>
-      <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Estudio de Fotografía de Joyería con IA</h1>
-    </div>
-  </header>
-);
-
-const ImageUploader: React.FC<{ onImageUpload: (files: File[]) => void; disabled: boolean }> = ({ onImageUpload, disabled }) => {
-  const [isDragging, setIsDragging] = React.useState(false);
-  const handleFileChange = (files: FileList | null) => files && files.length > 0 && onImageUpload(Array.from(files));
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") setIsDragging(true);
-    else if (e.type === "dragleave") setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    if (e.dataTransfer.files) handleFileChange(e.dataTransfer.files);
-  };
-
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-      <label
-        htmlFor="file-upload"
-        onDragEnter={handleDrag}
-        onDragOver={handleDrag}
-        onDragLeave={handleDrag}
-        onDrop={handleDrop}
-        className={`flex justify-center w-full h-48 px-6 pt-5 pb-6 border-2 ${isDragging ? 'border-indigo-600 bg-indigo-50' : 'border-slate-300'} border-dashed rounded-md transition-colors duration-200 ease-in-out ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-      >
-        <div className="space-y-1 text-center self-center">
-          <UploadIcon className="mx-auto h-12 w-12 text-slate-400" />
-          <p className="text-sm text-slate-600">
-            <span className="font-semibold text-indigo-600">Sube tus archivos</span> o arrastra y suelta
-          </p>
-          <p className="text-xs text-slate-500">PNG, JPG, GIF hasta 10MB</p>
-        </div>
-        <input
-          id="file-upload"
-          name="file-upload"
-          type="file"
-          className="sr-only"
-          multiple
-          accept="image/*"
-          disabled={disabled}
-          onChange={(e) => handleFileChange(e.target.files)}
-        />
-      </label>
-    </div>
-  );
-};
-
-const VideoPollingComponent: React.FC<{ job: ImageJob; dispatch: React.Dispatch<Action> }> = ({ job, dispatch }) => {
+    // --- EFFECTS ---
     useEffect(() => {
-        if (job.status !== 'processing_video' || !job.videoOperation) return;
-
-        dispatch({ type: 'UPDATE_VIDEO_STATUS', payload: { jobId: job.id, status: 'processing' } });
-        const intervalId = setInterval(async () => {
-            try {
-                const result = await apiFetch({ mode: 'video_check', operation: job.videoOperation });
-                if (result.status === 'done') {
-                    dispatch({ type: 'PROCESS_VIDEO_SUCCESS', payload: { jobId: job.id, videoUrl: result.videoUrl } });
-                    clearInterval(intervalId);
-                } else if (result.status === 'processing') {
-                    dispatch({ type: 'UPDATE_VIDEO_OPERATION', payload: { jobId: job.id, operation: result.operation } });
-                } else {
-                     throw new Error('El procesamiento del video finalizó sin una URL válida.');
+        const checkKey = async () => {
+            if (typeof window.aistudio?.hasSelectedApiKey === 'function') {
+                try {
+                    const keyStatus = await window.aistudio.hasSelectedApiKey();
+                    setHasApiKey(keyStatus);
+                } catch (e) {
+                    console.error("Error checking for API key:", e);
+                    setHasApiKey(false);
                 }
-            } catch (error: any) {
-                dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId: job.id, error: error.message } });
-                clearInterval(intervalId);
+            } else {
+                console.warn("aistudio API not found.");
+                setHasApiKey(false);
             }
-        }, 10000); // Poll every 10 seconds
+        };
+        checkKey();
+    }, []);
 
-        return () => clearInterval(intervalId);
-    }, [job.id, job.status, job.videoOperation, dispatch]);
+    useEffect(() => {
+        const checkStatus = async () => {
+            if (videoResult?.status === 'processing' && videoResult.operation) {
+                try {
+                    const result = await callApi({ mode: 'video_check', operation: videoResult.operation });
+                    if (result.status === 'done') {
+                        setVideoResult({ status: 'done', videoUrl: result.videoUrl });
+                        setLoading(prev => ({ ...prev, video: false }));
+                    } else if (result.status === 'done_no_uri' || result.status === 'failed') {
+                         setError('La generación del video finalizó, pero no se pudo obtener el resultado. Inténtalo de nuevo.');
+                         setVideoResult(null);
+                         setLoading(prev => ({ ...prev, video: false }));
+                    } else {
+                        setVideoResult(prev => prev ? { ...prev, operation: result.operation } : null);
+                    }
+                } catch (e: any) {
+                    setError(`Error al verificar el estado del video: ${e.message}`);
+                    setLoading(prev => ({ ...prev, video: false }));
+                    setVideoResult(null);
+                }
+            }
+        };
 
-    const getStatusMessage = () => {
-        switch (job.videoStatus) {
-            case 'starting': return 'Iniciando la generación de video...';
-            case 'processing': return 'Procesando video, esto puede tardar unos minutos...';
-            default: return 'Preparando para procesar...';
+        if (videoResult?.status === 'processing') {
+            videoCheckIntervalRef.current = window.setInterval(checkStatus, 10000);
         }
+
+        return () => {
+            if (videoCheckIntervalRef.current) {
+                clearInterval(videoCheckIntervalRef.current);
+                videoCheckIntervalRef.current = null;
+            }
+        };
+    }, [videoResult]);
+
+    // --- HANDLERS ---
+    const handleFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        handleReset();
+        setError(null);
+
+        try {
+            const { base64, mimeType } = await resizeImage(file, 1024);
+            setSourceImage({ url: URL.createObjectURL(file), base64, mimeType });
+        } catch (err) {
+            setError("Error al procesar la imagen. Por favor, intenta con otro archivo.");
+            console.error(err);
+        }
+    }, []);
+
+    const handleReset = useCallback(() => {
+        setSourceImage(null);
+        setCatalogImage(null);
+        setThematicImages([]);
+        setVideoResult(null);
+        setError(null);
+        setLoading({ catalog: false, thematic: false, video: false });
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        if (videoCheckIntervalRef.current) clearInterval(videoCheckIntervalRef.current);
+    }, []);
+
+    const handleGenerateCatalog = async () => {
+        if (!sourceImage) return;
+        setLoading(prev => ({ ...prev, catalog: true }));
+        setError(null);
+        setCatalogImage(null);
+        try {
+            const { enhancedImages } = await callApi({ mode: 'catalog', base64Image: sourceImage.base64, mimeType: sourceImage.mimeType });
+            setCatalogImage(enhancedImages[0]);
+        } catch (err: any) { setError(`Error al generar imagen de catálogo: ${err.message}`); } 
+        finally { setLoading(prev => ({ ...prev, catalog: false })); }
+    };
+    
+    const handleGenerateThematic = async () => {
+        if (!sourceImage) return;
+        setLoading(prev => ({ ...prev, thematic: true }));
+        setError(null);
+        setThematicImages([]);
+        try {
+            const { enhancedImages } = await callApi({ mode: 'thematic', base64Image: sourceImage.base64, mimeType: sourceImage.mimeType, userTheme: theme });
+            setThematicImages(enhancedImages);
+        } catch (err: any) { setError(`Error al generar imágenes de temporada: ${err.message}`); }
+        finally { setLoading(prev => ({ ...prev, thematic: false })); }
     };
 
+    const handleGenerateVideo = async () => {
+        if (!sourceImage) return;
+        if (hasApiKey === undefined) return;
+        if (!hasApiKey) { setIsApiKeyModalOpen(true); return; }
+
+        setLoading(prev => ({ ...prev, video: true }));
+        setError(null);
+        setVideoResult(null);
+        try {
+            const { operation } = await callApi({ mode: 'video_start', base64Image: sourceImage.base64, mimeType: sourceImage.mimeType, prompt: videoPrompt });
+            setVideoResult({ status: 'processing', operation });
+        } catch (err: any) {
+             if (err.message?.toLowerCase().includes('not found') || err.message?.toLowerCase().includes('api key not valid')) { 
+                setHasApiKey(false);
+                setError("La clave de API no fue encontrada o no es válida. Por favor, selecciona una clave de nuevo.");
+                setIsApiKeyModalOpen(true);
+            } else { setError(`Error al iniciar la generación de video: ${err.message}`); }
+            setLoading(prev => ({ ...prev, video: false }));
+        }
+    };
+    
+    const handleApiKeySelected = () => {
+        setIsApiKeyModalOpen(false);
+        setHasApiKey(true);
+        // Automatically trigger video generation after key selection
+        handleGenerateVideo();
+    };
+
+    const triggerFileSelect = () => fileInputRef.current?.click();
+
+    // --- RENDER LOGIC ---
     return (
-        <div className="text-center p-4">
-            <ArrowPathIcon className="mx-auto h-8 w-8 text-indigo-600 animate-spin" />
-            <p className="mt-2 text-sm text-slate-600">{getStatusMessage()}</p>
-            <p className="text-xs text-slate-500 mt-1">Puedes dejar esta página abierta.</p>
-             <button
-                onClick={() => {
-                  // Basic stop functionality
-                   dispatch({ type: 'RETRY_JOB', payload: { jobId: job.id } })
-                }}
-                className="mt-4 w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
-              >
-                <StopIcon className="w-5 h-5" />
-                <span>Cancelar</span>
-              </button>
+      <>
+        <ApiKeyModal isOpen={isApiKeyModalOpen} onClose={() => setIsApiKeyModalOpen(false)} onKeySelected={handleApiKeySelected} />
+        <div className="bg-slate-50 min-h-screen font-sans">
+          <header className="bg-white border-b border-slate-200">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center gap-3">
+              <SparklesIcon className="w-8 h-8 text-indigo-600" />
+              <h1 className="text-2xl font-bold text-slate-800">Estudio de Productos con IA</h1>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* --- INPUT & CONTROLS --- */}
+              <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200">
+                {!sourceImage ? (
+                  <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-12 text-center">
+                    <UploadIcon className="w-12 h-12 text-slate-400" />
+                    <h3 className="mt-4 text-lg font-medium text-slate-900">Sube tu foto de producto</h3>
+                    <p className="mt-1 text-sm text-slate-500">Arrastra y suelta un archivo o haz clic para seleccionar.</p>
+                    <button onClick={triggerFileSelect} className="mt-4 bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
+                      Seleccionar Archivo
+                    </button>
+                    <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-xl font-semibold text-slate-800">Tu Imagen</h2>
+                        <button onClick={handleReset} className="text-sm font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+                            <ArrowPathIcon className="w-4 h-4" /> Cambiar Imagen
+                        </button>
+                    </div>
+                    <img src={sourceImage.url} alt="Producto original" className="w-full rounded-lg shadow-md" />
+                  </div>
+                )}
+                
+                {sourceImage && (
+                  <div className="mt-6 space-y-6">
+                    {/* Catalog Generation */}
+                    <div className="p-4 border border-slate-200 rounded-lg">
+                      <h3 className="font-semibold text-slate-800 flex items-center gap-2"><PhotoIcon className="w-5 h-5 text-slate-500"/> Foto de Catálogo</h3>
+                      <p className="text-sm text-slate-500 mt-1 mb-3">Genera una imagen limpia con fondo neutro, perfecta para tu tienda online.</p>
+                      <button onClick={handleGenerateCatalog} disabled={isProcessing} className="w-full bg-slate-800 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-wait flex items-center justify-center gap-2">
+                        {loading.catalog ? 'Procesando...' : 'Generar'}
+                      </button>
+                    </div>
+                    
+                    {/* Thematic Generation */}
+                    <div className="p-4 border border-slate-200 rounded-lg">
+                       <h3 className="font-semibold text-slate-800 flex items-center gap-2"><SparklesIcon className="w-5 h-5 text-slate-500"/> Fotos de Temporada</h3>
+                       <p className="text-sm text-slate-500 mt-1 mb-3">Crea composiciones creativas para campañas de marketing y redes sociales.</p>
+                       <ThemeSelector theme={theme} setTheme={setTheme} disabled={isProcessing} />
+                       <button onClick={handleGenerateThematic} disabled={isProcessing} className="w-full mt-3 bg-slate-800 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-wait flex items-center justify-center gap-2">
+                        {loading.thematic ? 'Procesando...' : 'Generar 3 Estilos'}
+                       </button>
+                    </div>
+                    
+                    {/* Video Generation */}
+                    <div className="p-4 border border-slate-200 rounded-lg">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="font-semibold text-slate-800 flex items-center gap-2"><VideoCameraIcon className="w-5 h-5 text-slate-500"/> Video de Presentación</h3>
+                          <p className="text-sm text-slate-500 mt-1 mb-3">Crea un video corto y dinámico para destacar tu producto.</p>
+                        </div>
+                        {!hasApiKey && hasApiKey !== undefined && (
+                          <button onClick={() => setIsApiKeyModalOpen(true)} className="flex items-center gap-1 text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-full hover:bg-orange-200">
+                            <KeyIcon className="w-3 h-3"/> Se requiere clave
+                          </button>
+                        )}
+                      </div>
+                      <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} disabled={isProcessing} rows={2} className="w-full text-sm px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-50"></textarea>
+                      <button onClick={handleGenerateVideo} disabled={isProcessing} className="w-full mt-3 bg-slate-800 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-wait flex items-center justify-center gap-2">
+                        {loading.video ? 'Generando Video...' : 'Generar Video'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* --- RESULTS --- */}
+              <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-8">
+                {error && (
+                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
+                        <strong className="font-bold">Error: </strong>
+                        <span className="block sm:inline">{error}</span>
+                        <span className="absolute top-0 bottom-0 right-0 px-4 py-3" onClick={() => setError(null)}>
+                            <XMarkIcon className="w-5 h-5 cursor-pointer" />
+                        </span>
+                    </div>
+                )}
+
+                <ResultSection title="Resultado de Catálogo" isLoading={loading.catalog}>
+                    {catalogImage && <ImageResult src={`data:image/png;base64,${catalogImage}`} alt="Imagen de catálogo" />}
+                </ResultSection>
+
+                <ResultSection title="Resultados de Temporada" isLoading={loading.thematic}>
+                    {thematicImages.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {thematicImages.map((img, i) => <ImageResult key={i} src={`data:image/png;base64,${img}`} alt={`Imagen de temporada ${i + 1}`} />)}
+                        </div>
+                    )}
+                </ResultSection>
+
+                <ResultSection title="Resultado de Video" isLoading={loading.video}>
+                    {videoResult?.status === 'done' && videoResult.videoUrl && (
+                        <div className="relative">
+                            <video src={videoResult.videoUrl} controls autoPlay loop className="w-full rounded-lg shadow-md"></video>
+                             <a href={videoResult.videoUrl} download="presentacion_producto.mp4" className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full hover:bg-opacity-75 transition-colors">
+                                <DownloadIcon className="w-5 h-5" />
+                            </a>
+                        </div>
+                    )}
+                    {loading.video && <p className="text-sm text-slate-500 text-center">La generación de video puede tardar varios minutos. Gracias por tu paciencia.</p>}
+                </ResultSection>
+              </div>
+            </div>
+          </main>
         </div>
+      </>
     );
 };
 
-
-const JobCard: React.FC<{ job: ImageJob; dispatch: React.Dispatch<Action>; onProcess: (jobId: string, mode: 'catalog' | 'thematic') => void; onGenerateVideo: (jobId:string) => void; }> = ({ job, dispatch, onProcess, onGenerateVideo }) => {
-  const { id, originalImage, status, processedImages, processedVideoUrl, error, theme, videoPrompt } = job;
-
-  const handleThemeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    dispatch({ type: 'SET_JOB_THEME', payload: { jobId: id, theme: e.target.value } });
-  };
-  
-  const handleVideoPromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    dispatch({ type: 'SET_VIDEO_PROMPT', payload: { jobId: id, prompt: e.target.value } });
-  };
-
-  const renderContent = () => {
-    switch (status) {
-      case 'pending_selection':
-      case 'awaiting_theme':
-      case 'awaiting_video_prompt':
-        return (
-          <div className="p-4 flex flex-col items-center">
-            {status === 'pending_selection' && (
-                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
-                    <button onClick={() => onProcess(id, 'catalog')} className="flex items-center justify-center gap-2 w-full bg-slate-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-slate-700 transition-colors">
-                        <PhotoIcon className="w-5 h-5" /> Catálogo
-                    </button>
-                    <button onClick={() => dispatch({ type: 'SELECT_MODE', payload: { jobId: id, mode: 'thematic' } })} className="flex items-center justify-center gap-2 w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
-                        <SparklesIcon className="w-5 h-5" /> Temática
-                    </button>
-                    <button onClick={() => dispatch({ type: 'SELECT_VIDEO_MODE', payload: { jobId: id } })} className="flex items-center justify-center gap-2 w-full bg-rose-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-rose-700 transition-colors">
-                        <VideoCameraIcon className="w-5 h-5" /> Video
-                    </button>
-                </div>
-            )}
-            {status === 'awaiting_theme' && (
-                 <div className="w-full">
-                    <input type="text" value={theme} onChange={handleThemeChange} placeholder="Ej: 'Boda en la playa', 'Otoño'" className="w-full border-slate-300 rounded-md shadow-sm mb-2 focus:ring-indigo-500 focus:border-indigo-500"/>
-                    <button onClick={() => onProcess(id, 'thematic')} className="w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
-                        Generar "Temática"
-                    </button>
-                </div>
-            )}
-            {status === 'awaiting_video_prompt' && (
-                <div className="w-full">
-                   <textarea value={videoPrompt} onChange={handleVideoPromptChange} rows={3} className="w-full border-slate-300 rounded-md shadow-sm mb-2 focus:ring-rose-500 focus:border-rose-500" />
-                   <button onClick={() => onGenerateVideo(id)} className="w-full bg-rose-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-rose-700 transition-colors">
-                       Generar Video
-                   </button>
-                </div>
-            )}
-          </div>
-        );
-      case 'processing':
-        return <div className="text-center p-4 flex items-center justify-center gap-2"><ArrowPathIcon className="w-5 h-5 animate-spin" /> Procesando imagen...</div>;
-      case 'processing_video':
-        return <VideoPollingComponent job={job} dispatch={dispatch} />;
-      case 'success':
-        return (
-          <div className="grid grid-cols-1 gap-2 p-2">
-            {processedImages.map((img, index) => (
-              <a key={index} href={`data:image/jpeg;base64,${img}`} download={`${originalImage.name.split('.')[0]}_enhanced_${index}.jpg`} className="relative group">
-                <img src={`data:image/jpeg;base64,${img}`} alt={`Resultado ${index}`} className="w-full h-auto rounded-md" />
-                 <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <DownloadIcon className="w-8 h-8 text-white"/>
-                </div>
-              </a>
-            ))}
-          </div>
-        );
-      case 'success_video':
-        return (
-             <div className="p-4">
-                <video src={processedVideoUrl ?? ''} controls className="w-full rounded-lg" />
-                <a href={processedVideoUrl ?? ''} download={`${originalImage.name.split('.')[0]}_video.mp4`} className="mt-2 flex items-center justify-center gap-2 w-full bg-slate-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-slate-700 transition-colors">
-                    <DownloadIcon className="w-5 h-5" /> Descargar Video
-                </a>
-             </div>
-        );
-      case 'error':
-        return <div className="text-center p-4 text-red-600">Error: {error}</div>;
-      default:
-        return null;
-    }
-  };
-  
-  return (
-    <div className="bg-white rounded-lg shadow-md overflow-hidden flex flex-col">
-      <div className="p-2 border-b flex justify-between items-center bg-slate-50">
-        <p className="text-sm font-medium text-slate-700 truncate">{originalImage.name}</p>
-        {(status === 'success' || status === 'error' || status === 'success_video') && (
-          <button onClick={() => dispatch({ type: 'RETRY_JOB', payload: { jobId: id } })} className="text-slate-500 hover:text-indigo-600">
-            <ArrowPathIcon className="w-5 h-5"/>
-          </button>
-        )}
-      </div>
-      <div className="flex-grow flex flex-col justify-center items-center">
-         <img src={`data:${originalImage.mimeType};base64,${originalImage.base64}`} alt="Original" className="max-h-48 w-auto object-contain p-2" />
-      </div>
-      <div className="bg-slate-50 border-t min-h-[96px]">
-        {renderContent()}
-      </div>
-    </div>
-  );
-};
-
-// --- MAIN APP COMPONENT ---
-
-export default function App() {
-  const [state, dispatch] = useReducer(appReducer, initialState);
-  const [isApiKeyModalOpen, setApiKeyModalOpen] = useState(false);
-
-  const handleImageUpload = useCallback(async (files: File[]) => {
-    const imagePromises = files.map(file => resizeImage(file, 1024).then(resized => ({ ...resized, name: file.name })));
-    const resizedImages = await Promise.all(imagePromises);
-    dispatch({ type: 'UPLOAD_BATCH', payload: resizedImages });
-  }, []);
-
-  const handleProcessJob = useCallback(async (jobId: string, mode: 'catalog' | 'thematic') => {
-    const job = state.jobs.find(j => j.id === jobId);
-    if (!job) return;
-
-    dispatch({ type: 'PROCESS_JOB_START', payload: { jobId } });
-
-    try {
-        const body = {
-            mode,
-            base64Image: job.originalImage.base64,
-            mimeType: job.originalImage.mimeType,
-            ...(mode === 'thematic' && { userTheme: job.theme }),
-        };
-        const data = await apiFetch(body);
-        dispatch({ type: 'PROCESS_JOB_SUCCESS', payload: { jobId, processedImages: data.enhancedImages } });
-    } catch (error: any) {
-      dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId, error: error.message } });
-    }
-  }, [state.jobs]);
-
-  const handleGenerateVideo = useCallback(async (jobId: string) => {
-    const job = state.jobs.find(j => j.id === jobId);
-    if (!job) return;
-    
-    const hasKey = typeof (window as any).aistudio?.hasSelectedApiKey === 'function' ? await (window as any).aistudio.hasSelectedApiKey() : false;
-    if (!hasKey) {
-        setApiKeyModalOpen(true);
-        return;
-    }
-
-    dispatch({ type: 'PROCESS_VIDEO_START', payload: { jobId } });
-
-    try {
-        const body = {
-            mode: 'video_start',
-            base64Image: job.originalImage.base64,
-            mimeType: job.originalImage.mimeType,
-            prompt: job.videoPrompt,
-        };
-        const data = await apiFetch(body);
-        dispatch({ type: 'UPDATE_VIDEO_OPERATION', payload: { jobId, operation: data.operation } });
-    } catch (error: any) {
-        dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId, error: error.message } });
-    }
-  }, [state.jobs]);
-
-
-  const isAnyJobActive = useMemo(() => state.jobs.some(job => ['processing', 'processing_video'].includes(job.status)), [state.jobs]);
-
-  return (
-    <div className="bg-slate-100 min-h-screen font-sans">
-      <Header />
-      <main>
-        <ImageUploader onImageUpload={handleImageUpload} disabled={isAnyJobActive} />
-
-        {state.jobs.length > 0 && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {state.jobs.map(job => (
-                <JobCard key={job.id} job={job} dispatch={dispatch} onProcess={handleProcessJob} onGenerateVideo={handleGenerateVideo} />
-              ))}
+// --- SUB-COMPONENTS ---
+const ResultSection: React.FC<{ title: string, isLoading: boolean, children: React.ReactNode }> = ({ title, isLoading, children }) => (
+    <div>
+        <h3 className="text-lg font-semibold text-slate-800 mb-3">{title}</h3>
+        {isLoading && (
+            <div className="flex justify-center items-center h-48 bg-slate-100 rounded-lg">
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Procesando...</span>
             </div>
-            <div className="text-center mt-8">
-                <button onClick={() => dispatch({ type: 'RESET' })} className="text-sm text-slate-500 hover:text-red-600 transition-colors">
-                    Limpiar todo
-                </button>
-            </div>
-          </div>
         )}
-      </main>
-      <ApiKeyModal
-        isOpen={isApiKeyModalOpen}
-        onClose={() => setApiKeyModalOpen(false)}
-        onKeySelected={() => {
-            setApiKeyModalOpen(false);
-            const jobToRetry = state.jobs.find(j => j.status === 'awaiting_video_prompt');
-            if (jobToRetry) {
-                handleGenerateVideo(jobToRetry.id);
-            }
-        }}
-      />
+        {!isLoading && children}
     </div>
-  );
-}
+);
+
+const ImageResult: React.FC<{ src: string, alt: string }> = ({ src, alt }) => (
+    <div className="group relative">
+        <img src={src} alt={alt} className="w-full rounded-lg shadow-md" />
+        <a href={src} download={`${alt.replace(/\s+/g, '_')}.png`} className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+            <DownloadIcon className="w-5 h-5" />
+        </a>
+    </div>
+);
+
+
+export default App;

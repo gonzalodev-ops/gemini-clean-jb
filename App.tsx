@@ -6,7 +6,7 @@ import ApiKeyModal from './components/ApiKeyModal';
 // --- CONSTANTS ---
 // Esta clave es para autorizar las peticiones del frontend a tu backend en Vercel.
 // Debe coincidir EXACTAMENTE con el valor de la variable de entorno `SERVER_API_KEY` que configures en Vercel.
-const SERVER_API_KEY = 'your-secret-key-for-frontend-to-backend-communication';
+const SERVER_API_KEY = 'xPPkpdDu4A_fRL8PBRNfwKFqwsrrYXqEz3G7uVUL!xCFtT2jm_T3avo3zCPrP';
 
 // --- TYPE DEFINITIONS ---
 type ImageFile = {

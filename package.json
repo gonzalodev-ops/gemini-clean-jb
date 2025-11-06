@@ -1,5 +1,5 @@
 {
-  "name": "copy-of-joyería-premium-enhancer-con-seleccion",
+  "name": "joyería-premium-enhancer-con-seleccion,-lote,-ps-y-variantes",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -11,7 +11,8 @@
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "@google/genai": "^1.28.0"
+    "@google/genai": "^1.28.0",
+    "@vercel/node": "^5.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

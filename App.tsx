@@ -1,418 +1,500 @@
-
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  UploadIcon,
-  DownloadIcon,
-  SparklesIcon,
-  XMarkIcon,
-  ArrowPathIcon,
-  KeyIcon,
-  PhotoIcon,
-  VideoCameraIcon,
-  StopIcon,
-} from './components/icons';
-import ApiKeyModal from './components/ApiKeyModal';
+import React, { useReducer, useCallback, useMemo, useState, useEffect } from 'react';
+import { UploadIcon, DownloadIcon, SparklesIcon, ArrowPathIcon, PhotoIcon, VideoCameraIcon, XMarkIcon, KeyIcon, StopIcon } from './components/icons';
 import { resizeImage } from './utils';
+import ApiKeyModal from './components/ApiKeyModal';
 
-// Types
-type ImageFile = {
-  file: File;
-  preview: string;
-  base64: string;
-  mimeType: string;
-};
-type Mode = 'catalog' | 'thematic' | 'video';
-type Result = { type: 'image'; url: string } | { type: 'video'; url: string };
-type VideoStatus = 'idle' | 'starting' | 'processing' | 'done' | 'error';
-
-// This would typically be in a .env file, but is included here for demonstration.
-// IMPORTANT: This key is for authenticating with YOUR OWN serverless function backend,
-// NOT the Google GenAI API key. It must match the SERVER_API_KEY environment
-// variable configured on your Vercel/serverless deployment.
+// --- CONSTANTS ---
+// Esta clave es para autorizar las peticiones del frontend a tu backend en Vercel.
+// Debe coincidir EXACTAMENTE con el valor de la variable de entorno `SERVER_API_KEY` que configures en Vercel.
 const SERVER_API_KEY = 'xPPkpdDu4A_fRL8PBRNfwKFqwsrrYXqEz3G7uVUL!xCFtT2jm_T3avo3zCPrP';
 
-// Helper component for mode selection
-const ModeButton: React.FC<{
-  label: string;
-  icon: React.ReactNode;
-  isActive: boolean;
-  onClick: () => void;
-}> = ({ label, icon, isActive, onClick }) => (
-  <button
-    onClick={onClick}
-    className={`flex-1 p-3 text-sm font-semibold rounded-lg flex flex-col items-center justify-center gap-1 transition-colors ${
-      isActive
-        ? 'bg-indigo-600 text-white'
-        : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-    }`}
-  >
-    {icon}
-    <span>{label}</span>
-  </button>
-);
+// --- TYPE DEFINITIONS ---
+type ImageFile = {
+  base64: string;
+  mimeType: string;
+  name: string;
+};
+
+type JobStatus = 'pending_selection' | 'awaiting_theme' | 'processing' | 'success' | 'error' | 'awaiting_video_prompt' | 'processing_video' | 'success_video';
+type VideoJobStatus = 'idle' | 'starting' | 'processing' | 'done' | 'error';
 
 
-const App: React.FC = () => {
-  const [image, setImage] = useState<ImageFile | null>(null);
-  const [mode, setMode] = useState<Mode>('catalog');
-  const [thematicTheme, setThematicTheme] = useState<string>('Navidad');
-  const [videoPrompt, setVideoPrompt] = useState<string>('Una toma elegante en cámara lenta de la joya, con efectos de luz brillante.');
-  const [results, setResults] = useState<Result[]>([]);
-  const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type ImageJob = {
+  id: string;
+  originalImage: ImageFile;
+  status: JobStatus;
+  processedImages: string[];
+  processedVideoUrl: string | null;
+  error: string | null;
+  theme: string;
+  videoPrompt: string;
+  videoOperation: any | null;
+  videoStatus: VideoJobStatus;
+};
 
-  // Video-specific state
-  const [isApiKeyModalOpen, setApiKeyModalOpen] = useState(false);
-  const [hasSelectedApiKey, setHasSelectedApiKey] = useState<boolean | null>(null);
-  const [videoStatus, setVideoStatus] = useState<VideoStatus>('idle');
-  const videoOperationRef = useRef<any>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+type State = {
+  jobs: ImageJob[];
+};
 
-  const checkApiKey = useCallback(async (showAlert = false) => {
-    // The `window.aistudio` object is injected by the environment (e.g., Google AI Studio).
-    if (typeof (window as any).aistudio?.hasSelectedApiKey !== 'function') {
-      if (showAlert) {
-        setError("La funcionalidad de clave API no está disponible en este entorno.");
-      }
-      setHasSelectedApiKey(false);
-      return false;
-    }
-    try {
-      const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-      setHasSelectedApiKey(hasKey);
-      return hasKey;
-    } catch (e) {
-      console.error("Error checking for API key:", e);
-      if (showAlert) {
-        setError("Error al verificar la clave de API.");
-      }
-      setHasSelectedApiKey(false);
-      return false;
-    }
-  }, []);
+type Action =
+  | { type: 'UPLOAD_BATCH'; payload: ImageFile[] }
+  | { type: 'SELECT_MODE'; payload: { jobId: string; mode: 'catalog' | 'thematic' } }
+  | { type: 'SELECT_VIDEO_MODE'; payload: { jobId: string } }
+  | { type: 'SET_JOB_THEME'; payload: { jobId: string; theme: string } }
+  | { type: 'SET_VIDEO_PROMPT'; payload: { jobId: string; prompt: string } }
+  | { type: 'PROCESS_JOB_START'; payload: { jobId: string } }
+  | { type: 'PROCESS_VIDEO_START'; payload: { jobId: string } }
+  | { type: 'PROCESS_JOB_SUCCESS'; payload: { jobId: string; processedImages: string[] } }
+  | { type: 'PROCESS_VIDEO_SUCCESS'; payload: { jobId: string; videoUrl: string } }
+  | { type: 'PROCESS_JOB_ERROR'; payload: { jobId: string; error: string } }
+  | { type: 'UPDATE_VIDEO_OPERATION'; payload: { jobId: string; operation: any } }
+  | { type: 'UPDATE_VIDEO_STATUS'; payload: { jobId: string; status: VideoJobStatus } }
+  | { type: 'RETRY_JOB'; payload: { jobId: string } }
+  | { type: 'RESET' };
 
-  useEffect(() => {
-    if (mode === 'video') {
-      checkApiKey();
-    }
-  }, [mode, checkApiKey]);
+// --- API HELPER ---
 
-  const clearPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-  };
-
-  useEffect(() => {
-    return () => clearPolling();
-  }, []);
-
-  const handleFileChange = useCallback(async (file: File | null) => {
-    if (!file || !file.type.startsWith('image/')) {
-      setError('Por favor, selecciona un archivo de imagen válido (JPEG, PNG, etc.).');
-      return;
-    }
-    setError(null);
-    setResults([]);
-    setVideoStatus('idle');
-    clearPolling();
-
-    try {
-      const { base64, mimeType } = await resizeImage(file, 1024);
-      setImage({
-        file,
-        preview: URL.createObjectURL(file),
-        base64,
-        mimeType,
-      });
-    } catch (err) {
-      console.error("Error resizing image:", err);
-      setError('No se pudo procesar la imagen seleccionada.');
-    }
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => e.preventDefault(), []);
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileChange(e.dataTransfer.files[0]);
-    }
-  }, [handleFileChange]);
-
-  const clearImage = useCallback(() => {
-    if (image) {
-      URL.revokeObjectURL(image.preview);
-    }
-    setImage(null);
-    setResults([]);
-    setError(null);
-    setVideoStatus('idle');
-    clearPolling();
-  }, [image]);
-
-  const pollVideoStatus = useCallback(async (operation: any) => {
-    setVideoStatus('processing');
-    pollIntervalRef.current = setInterval(async () => {
-      try {
-        const res = await fetch('/api/enhance', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SERVER_API_KEY}`,
-          },
-          body: JSON.stringify({ mode: 'video_check', operation }),
-        });
-
-        if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || 'Fallo al verificar el estado del video.');
-        }
-
-        const data = await res.json();
-        
-        if (data.status === 'done') {
-          setResults([{ type: 'video', url: data.videoUrl }]);
-          setVideoStatus('done');
-          videoOperationRef.current = null;
-          clearPolling();
-        } else if (data.status === 'done_no_uri') {
-          throw new Error('La generación de video se completó pero no se encontró la URL.');
-        } else {
-          videoOperationRef.current = data.operation; // Update operation for next poll
-        }
-      } catch (err: any) {
-        setError(`Error durante el sondeo del video: ${err.message}`);
-        setVideoStatus('error');
-        clearPolling();
-      }
-    }, 10000); // Poll every 10 seconds
-  }, []);
-
-  const handleGenerate = useCallback(async () => {
-    if (!image) return;
-
-    if (mode === 'video') {
-      const hasKey = await checkApiKey(true);
-      if (!hasKey) {
-        setApiKeyModalOpen(true);
-        return;
-      }
-    }
-    
-    setProcessing(true);
-    setResults([]);
-    setError(null);
-    if(mode === 'video') setVideoStatus('starting');
-    
-    try {
-      const apiMode = mode === 'video' ? 'video_start' : mode;
-      const body: any = {
-        mode: apiMode,
-        base64Image: image.base64,
-        mimeType: image.mimeType,
-      };
-      if (mode === 'thematic') body.userTheme = thematicTheme;
-      if (mode === 'video') body.prompt = videoPrompt;
-
-      const response = await fetch('/api/enhance', {
+async function apiFetch(body: Record<string, any>) {
+    const response = await fetch('/api/enhance', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SERVER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${SERVER_API_KEY}`,
         },
         body: JSON.stringify(body),
-      });
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        const errorMessage = errorData.error || `Error del servidor: ${response.status}`;
-        if (mode === 'video' && errorMessage.toLowerCase().includes('requested entity was not found')) {
-            setError("La clave de API no es válida o no tiene acceso al modelo Veo. Por favor, selecciona una clave diferente.");
-            setHasSelectedApiKey(false); // Reset key state so user is prompted again
-            setApiKeyModalOpen(true);
-        } else {
-            throw new Error(errorMessage);
-        }
-      } else {
-        const data = await response.json();
-        if (apiMode === 'video_start') {
-          videoOperationRef.current = data.operation;
-          pollVideoStatus(data.operation);
-        } else {
-          setResults(data.enhancedImages.map((img: string) => ({
-            type: 'image',
-            url: `data:image/jpeg;base64,${img}`
-          })));
-        }
-      }
-    } catch (err: any) {
-      setError(err.message);
-      if(mode === 'video') setVideoStatus('error');
-    } finally {
-      setProcessing(false);
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'La respuesta de la red no fue correcta.' }));
+        throw new Error(errorData.error || `Error HTTP: ${response.status}`);
     }
-  }, [image, mode, thematicTheme, videoPrompt, checkApiKey, pollVideoStatus]);
+    return response.json();
+}
 
-  const handleApiKeySelected = () => {
-    setApiKeyModalOpen(false);
-    setHasSelectedApiKey(true); // Assume success, let handleGenerate re-verify if needed
-    handleGenerate(); // Retry generation
+// --- STATE MANAGEMENT ---
+
+const initialState: State = {
+  jobs: [],
+};
+
+function appReducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'UPLOAD_BATCH':
+      return {
+        ...state,
+        jobs: action.payload.map(file => ({
+          id: crypto.randomUUID(),
+          originalImage: file,
+          status: 'pending_selection',
+          processedImages: [],
+          processedVideoUrl: null,
+          error: null,
+          theme: 'Navidad',
+          videoPrompt: 'Una toma elegante en cámara lenta de la joya, con efectos de luz brillante.',
+          videoOperation: null,
+          videoStatus: 'idle',
+        })),
+      };
+    case 'SELECT_MODE':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId
+            ? { ...job, status: action.payload.mode === 'thematic' ? 'awaiting_theme' : job.status }
+            : job
+        ),
+      };
+    case 'SELECT_VIDEO_MODE':
+      return {
+        ...state,
+        jobs: state.jobs.map(job => job.id === action.payload.jobId ? { ...job, status: 'awaiting_video_prompt' } : job),
+      };
+    case 'SET_JOB_THEME':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, theme: action.payload.theme } : job
+        ),
+      };
+    case 'SET_VIDEO_PROMPT':
+      return {
+        ...state,
+        jobs: state.jobs.map(job => job.id === action.payload.jobId ? { ...job, videoPrompt: action.payload.prompt } : job),
+      };
+    case 'PROCESS_JOB_START':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'processing', error: null } : job
+        ),
+      };
+    case 'PROCESS_VIDEO_START':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'processing_video', error: null, videoStatus: 'starting' } : job
+        ),
+      };
+    case 'PROCESS_JOB_SUCCESS':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'success', processedImages: action.payload.processedImages } : job
+        ),
+      };
+    case 'PROCESS_VIDEO_SUCCESS':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'success_video', videoStatus: 'done', processedVideoUrl: action.payload.videoUrl, videoOperation: null } : job
+        ),
+      };
+    case 'PROCESS_JOB_ERROR':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'error', videoStatus: 'error', error: action.payload.error } : job
+        ),
+      };
+    case 'UPDATE_VIDEO_OPERATION':
+        return {
+            ...state,
+            jobs: state.jobs.map(job =>
+                job.id === action.payload.jobId ? { ...job, videoOperation: action.payload.operation } : job
+            ),
+        };
+    case 'UPDATE_VIDEO_STATUS':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? {...job, videoStatus: action.payload.status} : job
+        ),
+      };
+    case 'RETRY_JOB':
+      return {
+        ...state,
+        jobs: state.jobs.map(job =>
+          job.id === action.payload.jobId ? { ...job, status: 'pending_selection', error: null, processedImages: [], processedVideoUrl: null, videoOperation: null, videoStatus: 'idle' } : job
+        ),
+      };
+    case 'RESET':
+      return initialState;
+    default:
+      return state;
+  }
+}
+
+// --- UI COMPONENTS ---
+
+const Header: React.FC = () => (
+  <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-20">
+    <div className="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8 flex items-center gap-3">
+      <div className="p-2 bg-slate-800 rounded-lg">
+        <SparklesIcon className="w-6 h-6 text-white" />
+      </div>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Estudio de Fotografía de Joyería con IA</h1>
+    </div>
+  </header>
+);
+
+const ImageUploader: React.FC<{ onImageUpload: (files: File[]) => void; disabled: boolean }> = ({ onImageUpload, disabled }) => {
+  const [isDragging, setIsDragging] = React.useState(false);
+  const handleFileChange = (files: FileList | null) => files && files.length > 0 && onImageUpload(Array.from(files));
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") setIsDragging(true);
+    else if (e.type === "dragleave") setIsDragging(false);
   };
 
-  const stopVideoGeneration = () => {
-    clearPolling();
-    setProcessing(false);
-    setVideoStatus('idle');
-    videoOperationRef.current = null;
-    setError('Generación de video cancelada por el usuario.');
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer.files) handleFileChange(e.dataTransfer.files);
   };
-    
-  const isGenerating = processing || videoStatus === 'starting' || videoStatus === 'processing';
 
   return (
-    <div className="bg-slate-100 min-h-screen font-sans text-slate-800">
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <h1 className="text-2xl font-bold text-slate-900">Estudio Fotográfico de Joyería con IA</h1>
-          <p className="text-sm text-slate-600">Sube una foto de tu producto para generar imágenes de catálogo, temáticas o videos de presentación.</p>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+      <label
+        htmlFor="file-upload"
+        onDragEnter={handleDrag}
+        onDragOver={handleDrag}
+        onDragLeave={handleDrag}
+        onDrop={handleDrop}
+        className={`flex justify-center w-full h-48 px-6 pt-5 pb-6 border-2 ${isDragging ? 'border-indigo-600 bg-indigo-50' : 'border-slate-300'} border-dashed rounded-md transition-colors duration-200 ease-in-out ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+      >
+        <div className="space-y-1 text-center self-center">
+          <UploadIcon className="mx-auto h-12 w-12 text-slate-400" />
+          <p className="text-sm text-slate-600">
+            <span className="font-semibold text-indigo-600">Sube tus archivos</span> o arrastra y suelta
+          </p>
+          <p className="text-xs text-slate-500">PNG, JPG, GIF hasta 10MB</p>
         </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Controls Column */}
-          <div className="bg-white p-6 rounded-xl shadow-lg">
-            {!image ? (
-                <div 
-                    onDragOver={handleDragOver}
-                    onDrop={handleDrop}
-                    className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center"
-                >
-                    <UploadIcon className="mx-auto h-12 w-12 text-slate-400" />
-                    <label htmlFor="file-upload" className="mt-4 text-sm text-slate-600">
-                        <span className="font-semibold text-indigo-600 cursor-pointer hover:underline">Sube un archivo</span> o arrástralo y suéltalo aquí
-                    </label>
-                    <input id="file-upload" name="file-upload" type="file" className="sr-only" accept="image/*" onChange={(e) => handleFileChange(e.target.files?.[0] || null)} />
-                    <p className="text-xs text-slate-500 mt-1">PNG, JPG, GIF hasta 10MB</p>
-                </div>
-            ) : (
-                <div className="space-y-6">
-                    <div>
-                        <h2 className="font-semibold text-lg mb-2">Imagen Original</h2>
-                        <div className="relative">
-                            <img src={image.preview} alt="Vista previa de la joya" className="w-full rounded-lg object-contain max-h-60" />
-                            <button onClick={clearImage} className="absolute top-2 right-2 bg-black bg-opacity-50 text-white rounded-full p-1.5 hover:bg-opacity-75 transition-colors" aria-label="Limpiar imagen">
-                                <XMarkIcon className="w-5 h-5" />
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div>
-                      <h3 className="font-semibold mb-3">1. Elige un modo de generación</h3>
-                      <div className="flex gap-2">
-                        <ModeButton label="Catálogo" icon={<PhotoIcon className="w-5 h-5" />} isActive={mode === 'catalog'} onClick={() => setMode('catalog')} />
-                        <ModeButton label="Temática" icon={<SparklesIcon className="w-5 h-5" />} isActive={mode === 'thematic'} onClick={() => setMode('thematic')} />
-                        <ModeButton label="Video" icon={<VideoCameraIcon className="w-5 h-5" />} isActive={mode === 'video'} onClick={() => setMode('video')} />
-                      </div>
-                    </div>
-                    
-                    {mode === 'thematic' && (
-                        <div>
-                            <label htmlFor="theme" className="block text-sm font-medium text-slate-700 mb-1">2. Introduce un tema</label>
-                            <input type="text" id="theme" value={thematicTheme} onChange={(e) => setThematicTheme(e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500" placeholder="Ej: Verano, Boda, Vintage" />
-                        </div>
-                    )}
-
-                    {mode === 'video' && (
-                        <div>
-                            <label htmlFor="prompt" className="block text-sm font-medium text-slate-700 mb-1">2. Describe el video</label>
-                            <textarea id="prompt" value={videoPrompt} onChange={(e) => setVideoPrompt(e.target.value)} rows={3} className="w-full border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500" placeholder="Ej: Un acercamiento lento a la joya sobre un fondo de terciopelo." />
-                            <button onClick={() => checkApiKey(true)} className={`mt-2 text-sm flex items-center gap-1.5 ${hasSelectedApiKey ? 'text-green-600' : 'text-orange-600'}`}>
-                                <KeyIcon className="w-4 h-4" />
-                                {hasSelectedApiKey === null ? 'Verificando clave...' : hasSelectedApiKey ? 'Clave de API seleccionada' : 'Se requiere clave de API'}
-                            </button>
-                        </div>
-                    )}
-
-                    <button
-                      onClick={handleGenerate}
-                      disabled={isGenerating}
-                      className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                      {isGenerating ? (
-                        <>
-                          <ArrowPathIcon className="w-5 h-5 animate-spin" />
-                          <span>Generando...</span>
-                        </>
-                      ) : (
-                        'Generar'
-                      )}
-                    </button>
-                    {videoStatus === 'processing' && (
-                        <button
-                          onClick={stopVideoGeneration}
-                          className="w-full bg-red-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
-                        >
-                            <StopIcon className="w-5 h-5" />
-                            <span>Detener Generación de Video</span>
-                        </button>
-                    )}
-                </div>
-            )}
-          </div>
-
-          {/* Results Column */}
-          <div className="bg-white p-6 rounded-xl shadow-lg">
-            <h2 className="font-semibold text-lg mb-4">Resultados</h2>
-            {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert"><p>{error}</p></div>}
-            
-            {isGenerating && !results.length && (
-                <div className="text-center py-10">
-                    <ArrowPathIcon className="mx-auto h-10 w-10 text-indigo-600 animate-spin" />
-                    <p className="mt-4 text-slate-600">
-                        {videoStatus === 'starting' ? 'Iniciando la generación de video...' : videoStatus === 'processing' ? 'Procesando video, esto puede tardar unos minutos...' : 'Procesando tu solicitud...'}
-                    </p>
-                </div>
-            )}
-
-            {results.length > 0 && (
-              <div className={`grid gap-4 ${results.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                {results.map((result, index) => (
-                    <div key={index} className="relative group">
-                        {result.type === 'image' ? (
-                            <img src={result.url} alt={`Resultado generado ${index + 1}`} className="w-full h-full object-cover rounded-lg" />
-                        ) : (
-                            <video src={result.url} controls autoPlay loop className="w-full rounded-lg" />
-                        )}
-                        <a href={result.url} download={`resultado-${mode}-${index + 1}.${result.type === 'image' ? 'jpg' : 'mp4'}`} className="absolute bottom-2 right-2 bg-black bg-opacity-50 text-white rounded-full p-2 opacity-0 group-hover:opacity-100 transition-opacity" aria-label="Descargar">
-                            <DownloadIcon className="w-5 h-5" />
-                        </a>
-                    </div>
-                ))}
-              </div>
-            )}
-
-            {!isGenerating && results.length === 0 && !image && (
-                <div className="text-center text-slate-500 py-10">
-                    <p>Sube una imagen para comenzar.</p>
-                </div>
-            )}
-            {!isGenerating && results.length === 0 && image && (
-                <div className="text-center text-slate-500 py-10">
-                    <p>Tus imágenes o videos generados aparecerán aquí.</p>
-                </div>
-            )}
-          </div>
-        </div>
-      </main>
-      <ApiKeyModal
-        isOpen={isApiKeyModalOpen}
-        onClose={() => setApiKeyModalOpen(false)}
-        onKeySelected={handleApiKeySelected}
-      />
+        <input
+          id="file-upload"
+          name="file-upload"
+          type="file"
+          className="sr-only"
+          multiple
+          accept="image/*"
+          disabled={disabled}
+          onChange={(e) => handleFileChange(e.target.files)}
+        />
+      </label>
     </div>
   );
 };
 
-export default App;
+const VideoPollingComponent: React.FC<{ job: ImageJob; dispatch: React.Dispatch<Action> }> = ({ job, dispatch }) => {
+    useEffect(() => {
+        if (job.status !== 'processing_video' || !job.videoOperation) return;
+
+        dispatch({ type: 'UPDATE_VIDEO_STATUS', payload: { jobId: job.id, status: 'processing' } });
+        const intervalId = setInterval(async () => {
+            try {
+                const result = await apiFetch({ mode: 'video_check', operation: job.videoOperation });
+                if (result.status === 'done') {
+                    dispatch({ type: 'PROCESS_VIDEO_SUCCESS', payload: { jobId: job.id, videoUrl: result.videoUrl } });
+                    clearInterval(intervalId);
+                } else if (result.status === 'processing') {
+                    dispatch({ type: 'UPDATE_VIDEO_OPERATION', payload: { jobId: job.id, operation: result.operation } });
+                } else {
+                     throw new Error('El procesamiento del video finalizó sin una URL válida.');
+                }
+            } catch (error: any) {
+                dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId: job.id, error: error.message } });
+                clearInterval(intervalId);
+            }
+        }, 10000); // Poll every 10 seconds
+
+        return () => clearInterval(intervalId);
+    }, [job.id, job.status, job.videoOperation, dispatch]);
+
+    const getStatusMessage = () => {
+        switch (job.videoStatus) {
+            case 'starting': return 'Iniciando la generación de video...';
+            case 'processing': return 'Procesando video, esto puede tardar unos minutos...';
+            default: return 'Preparando para procesar...';
+        }
+    };
+
+    return (
+        <div className="text-center p-4">
+            <ArrowPathIcon className="mx-auto h-8 w-8 text-indigo-600 animate-spin" />
+            <p className="mt-2 text-sm text-slate-600">{getStatusMessage()}</p>
+            <p className="text-xs text-slate-500 mt-1">Puedes dejar esta página abierta.</p>
+             <button
+                onClick={() => {
+                  // Basic stop functionality
+                   dispatch({ type: 'RETRY_JOB', payload: { jobId: job.id } })
+                }}
+                className="mt-4 w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
+              >
+                <StopIcon className="w-5 h-5" />
+                <span>Cancelar</span>
+              </button>
+        </div>
+    );
+};
+
+
+const JobCard: React.FC<{ job: ImageJob; dispatch: React.Dispatch<Action>; onProcess: (jobId: string, mode: 'catalog' | 'thematic') => void; onGenerateVideo: (jobId:string) => void; }> = ({ job, dispatch, onProcess, onGenerateVideo }) => {
+  const { id, originalImage, status, processedImages, processedVideoUrl, error, theme, videoPrompt } = job;
+
+  const handleThemeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    dispatch({ type: 'SET_JOB_THEME', payload: { jobId: id, theme: e.target.value } });
+  };
+  
+  const handleVideoPromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    dispatch({ type: 'SET_VIDEO_PROMPT', payload: { jobId: id, prompt: e.target.value } });
+  };
+
+  const renderContent = () => {
+    switch (status) {
+      case 'pending_selection':
+      case 'awaiting_theme':
+      case 'awaiting_video_prompt':
+        return (
+          <div className="p-4 flex flex-col items-center">
+            {status === 'pending_selection' && (
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
+                    <button onClick={() => onProcess(id, 'catalog')} className="flex items-center justify-center gap-2 w-full bg-slate-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-slate-700 transition-colors">
+                        <PhotoIcon className="w-5 h-5" /> Catálogo
+                    </button>
+                    <button onClick={() => dispatch({ type: 'SELECT_MODE', payload: { jobId: id, mode: 'thematic' } })} className="flex items-center justify-center gap-2 w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
+                        <SparklesIcon className="w-5 h-5" /> Temática
+                    </button>
+                    <button onClick={() => dispatch({ type: 'SELECT_VIDEO_MODE', payload: { jobId: id } })} className="flex items-center justify-center gap-2 w-full bg-rose-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-rose-700 transition-colors">
+                        <VideoCameraIcon className="w-5 h-5" /> Video
+                    </button>
+                </div>
+            )}
+            {status === 'awaiting_theme' && (
+                 <div className="w-full">
+                    <input type="text" value={theme} onChange={handleThemeChange} placeholder="Ej: 'Boda en la playa', 'Otoño'" className="w-full border-slate-300 rounded-md shadow-sm mb-2 focus:ring-indigo-500 focus:border-indigo-500"/>
+                    <button onClick={() => onProcess(id, 'thematic')} className="w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
+                        Generar "Temática"
+                    </button>
+                </div>
+            )}
+            {status === 'awaiting_video_prompt' && (
+                <div className="w-full">
+                   <textarea value={videoPrompt} onChange={handleVideoPromptChange} rows={3} className="w-full border-slate-300 rounded-md shadow-sm mb-2 focus:ring-rose-500 focus:border-rose-500" />
+                   <button onClick={() => onGenerateVideo(id)} className="w-full bg-rose-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-rose-700 transition-colors">
+                       Generar Video
+                   </button>
+                </div>
+            )}
+          </div>
+        );
+      case 'processing':
+        return <div className="text-center p-4 flex items-center justify-center gap-2"><ArrowPathIcon className="w-5 h-5 animate-spin" /> Procesando imagen...</div>;
+      case 'processing_video':
+        return <VideoPollingComponent job={job} dispatch={dispatch} />;
+      case 'success':
+        return (
+          <div className="grid grid-cols-1 gap-2 p-2">
+            {processedImages.map((img, index) => (
+              <a key={index} href={`data:image/jpeg;base64,${img}`} download={`${originalImage.name.split('.')[0]}_enhanced_${index}.jpg`} className="relative group">
+                <img src={`data:image/jpeg;base64,${img}`} alt={`Resultado ${index}`} className="w-full h-auto rounded-md" />
+                 <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <DownloadIcon className="w-8 h-8 text-white"/>
+                </div>
+              </a>
+            ))}
+          </div>
+        );
+      case 'success_video':
+        return (
+             <div className="p-4">
+                <video src={processedVideoUrl ?? ''} controls className="w-full rounded-lg" />
+                <a href={processedVideoUrl ?? ''} download={`${originalImage.name.split('.')[0]}_video.mp4`} className="mt-2 flex items-center justify-center gap-2 w-full bg-slate-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-slate-700 transition-colors">
+                    <DownloadIcon className="w-5 h-5" /> Descargar Video
+                </a>
+             </div>
+        );
+      case 'error':
+        return <div className="text-center p-4 text-red-600">Error: {error}</div>;
+      default:
+        return null;
+    }
+  };
+  
+  return (
+    <div className="bg-white rounded-lg shadow-md overflow-hidden flex flex-col">
+      <div className="p-2 border-b flex justify-between items-center bg-slate-50">
+        <p className="text-sm font-medium text-slate-700 truncate">{originalImage.name}</p>
+        {(status === 'success' || status === 'error' || status === 'success_video') && (
+          <button onClick={() => dispatch({ type: 'RETRY_JOB', payload: { jobId: id } })} className="text-slate-500 hover:text-indigo-600">
+            <ArrowPathIcon className="w-5 h-5"/>
+          </button>
+        )}
+      </div>
+      <div className="flex-grow flex flex-col justify-center items-center">
+         <img src={`data:${originalImage.mimeType};base64,${originalImage.base64}`} alt="Original" className="max-h-48 w-auto object-contain p-2" />
+      </div>
+      <div className="bg-slate-50 border-t min-h-[96px]">
+        {renderContent()}
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN APP COMPONENT ---
+
+export default function App() {
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const [isApiKeyModalOpen, setApiKeyModalOpen] = useState(false);
+
+  const handleImageUpload = useCallback(async (files: File[]) => {
+    const imagePromises = files.map(file => resizeImage(file, 1024).then(resized => ({ ...resized, name: file.name })));
+    const resizedImages = await Promise.all(imagePromises);
+    dispatch({ type: 'UPLOAD_BATCH', payload: resizedImages });
+  }, []);
+
+  const handleProcessJob = useCallback(async (jobId: string, mode: 'catalog' | 'thematic') => {
+    const job = state.jobs.find(j => j.id === jobId);
+    if (!job) return;
+
+    dispatch({ type: 'PROCESS_JOB_START', payload: { jobId } });
+
+    try {
+        const body = {
+            mode,
+            base64Image: job.originalImage.base64,
+            mimeType: job.originalImage.mimeType,
+            ...(mode === 'thematic' && { userTheme: job.theme }),
+        };
+        const data = await apiFetch(body);
+        dispatch({ type: 'PROCESS_JOB_SUCCESS', payload: { jobId, processedImages: data.enhancedImages } });
+    } catch (error: any) {
+      dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId, error: error.message } });
+    }
+  }, [state.jobs]);
+
+  const handleGenerateVideo = useCallback(async (jobId: string) => {
+    const job = state.jobs.find(j => j.id === jobId);
+    if (!job) return;
+    
+    const hasKey = typeof (window as any).aistudio?.hasSelectedApiKey === 'function' ? await (window as any).aistudio.hasSelectedApiKey() : false;
+    if (!hasKey) {
+        setApiKeyModalOpen(true);
+        return;
+    }
+
+    dispatch({ type: 'PROCESS_VIDEO_START', payload: { jobId } });
+
+    try {
+        const body = {
+            mode: 'video_start',
+            base64Image: job.originalImage.base64,
+            mimeType: job.originalImage.mimeType,
+            prompt: job.videoPrompt,
+        };
+        const data = await apiFetch(body);
+        dispatch({ type: 'UPDATE_VIDEO_OPERATION', payload: { jobId, operation: data.operation } });
+    } catch (error: any) {
+        dispatch({ type: 'PROCESS_JOB_ERROR', payload: { jobId, error: error.message } });
+    }
+  }, [state.jobs]);
+
+
+  const isAnyJobActive = useMemo(() => state.jobs.some(job => ['processing', 'processing_video'].includes(job.status)), [state.jobs]);
+
+  return (
+    <div className="bg-slate-100 min-h-screen font-sans">
+      <Header />
+      <main>
+        <ImageUploader onImageUpload={handleImageUpload} disabled={isAnyJobActive} />
+
+        {state.jobs.length > 0 && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {state.jobs.map(job => (
+                <JobCard key={job.id} job={job} dispatch={dispatch} onProcess={handleProcessJob} onGenerateVideo={handleGenerateVideo} />
+              ))}
+            </div>
+            <div className="text-center mt-8">
+                <button onClick={() => dispatch({ type: 'RESET' })} className="text-sm text-slate-500 hover:text-red-600 transition-colors">
+                    Limpiar todo
+                </button>
+            </div>
+          </div>
+        )}
+      </main>
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setApiKeyModalOpen(false)}
+        onKeySelected={() => {
+            setApiKeyModalOpen(false);
+            const jobToRetry = state.jobs.find(j => j.status === 'awaiting_video_prompt');
+            if (jobToRetry) {
+                handleGenerateVideo(jobToRetry.id);
+            }
+        }}
+      />
+    </div>
+  );
+}

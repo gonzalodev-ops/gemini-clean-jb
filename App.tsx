@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { resizeImage } from './utils';
 import ThemeSelector from './components/ThemeSelector';
@@ -15,7 +14,9 @@ import {
   StopIcon,
 } from './components/icons';
 
-// --- TYPE DEFINITIONS ---
+// --- CONSTANTS & TYPE DEFINITIONS ---
+const SERVER_API_KEY = 'xPPkpdDu4A_fRL8PBRNfwKFqwsrrYXqEz3G7uVUL!xCFtT2jm_T3avo3zCPrP';
+
 type SourceImage = {
   url: string;
   base64: string;
@@ -38,19 +39,11 @@ type VideoResult = {
 
 // --- HELPER FUNCTIONS ---
 async function callApi(body: object) {
-    // This key is used to authenticate the frontend with its own backend serverless function.
-    // It should be configured as an environment variable (e.g., REACT_APP_SERVER_API_KEY).
-    const serverApiKey = process.env.REACT_APP_SERVER_API_KEY;
-    if (!serverApiKey) {
-        console.error("Server API key is not configured on the client.");
-        throw new Error("La configuración del cliente es inválida. No se puede contactar al servidor.");
-    }
-
     const response = await fetch('/api/enhance', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${serverApiKey}`,
+            'Authorization': `Bearer ${SERVER_API_KEY}`,
         },
         body: JSON.stringify(body),
     });

@@ -1,77 +1,157 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const API_KEY = process.env.API_KEY;
-
-if (!API_KEY) {
-    throw new Error("API_KEY environment variable not set");
-}
-
-const ai = new GoogleGenAI({ apiKey: API_KEY });
-
 const model = 'gemini-2.5-flash-image';
 
-const prompt = `You are a robotic image processor. Your only function is to execute a precise, non-creative, technical workflow. You must follow these instructions verbatim. DO NOT interpret, create, or "improve" beyond the defined steps.
+// --- PROMPT ENGINEERING ---
+// This prompt guides the model to act as a product photographer creating a full composition.
+const basePrompt = `
+TASK: You are a world-class jewelry product photographer. Your task is to extract the jewelry from the user's image and place it into a new, elegant, and photorealistic composition.
 
-**--- CORE DIRECTIVE: REPLICATE EXACTLY ---**
-The jewelry item in the output image MUST be the IDENTICAL object from the input. It is a critical failure to alter the object's form or perspective in any way.
+THEME: "{{THEME}}"
+COMPOSITION STYLE: "{{STYLE_GUIDANCE}}"
 
-**--- STRICT PROHIBITIONS (ZERO TOLERANCE) ---**
-1.  **DO NOT ADD GEOMETRY:** Do not invent or add parts that are not clearly visible in the original photo (e.g., do not add earring posts if they are not visible).
-2.  **DO NOT REMOVE GEOMETRY:** Do not crop, shorten, or delete any part of the jewelry that is visible in the original photo (e.g., do not remove visible earring posts).
-3.  **DO NOT CHANGE PERSPECTIVE:** The jewelry must maintain its original orientation, angle, and perspective. If the original is at a 3/4 angle, the output MUST be at the exact same 3/4 angle. Do not "straighten" or "flatten" the object to face the camera. Replicate the original perspective.
-4.  **DO NOT TRANSFORM:** Do not rotate, flip, resize, or distort the object's original aspect ratio.
+CRITICAL RULES:
+1.  **Create a Composition, Not Just a Background:** The jewelry must be integrated into a tasteful scene with props and surfaces related to the THEME. The result should look like a high-end product photoshoot.
+2.  **Preserve Jewelry Integrity:** DO NOT alter the jewelry's shape, orientation, proportions, or colors. If it's a pair of earrings, BOTH must be in the final image, positioned naturally.
+3.  **Jewelry is the Star:** The composition must be clean and uncluttered. Use a shallow depth of field (strong bokeh) to ensure the background elements do not distract from the jewelry.
+4.  **Professional Lighting:** Apply sophisticated studio lighting that enhances the metal's shine and the gemstones' sparkle and clarity.
+5.  **Photorealism is Key:** The final image must be indistinguishable from a real photograph. The integration of the jewelry into the new scene must be seamless.
+6.  **Output Format:** Generate a single 1:1 square image. DO NOT add any text, watermarks, or logos.
+`;
 
-**--- TECHNICAL PROCESSING WORKFLOW ---**
+// These styles guide the model in creating different types of photographic compositions.
+const creativeStyles = [
+    // Style 0: Elegant Still Life
+    `Elegant Still Life: Create a classic product shot. Place the jewelry on a clean, high-quality surface (like marble, silk, or fine wood). Add 1-2 small, elegant props from the theme in the background. The props and background should be heavily out of focus (strong bokeh). The composition should be balanced and minimalist.`,
+    
+    // Style 1: Immersive Scene
+    `Immersive Scene: Place the jewelry naturally within a complete, but simple, scene that evokes the theme. The jewelry can be resting on a prop or integrated more deeply. For example, for a 'Christmas' theme, earrings could be resting on a beautiful gift box or hanging delicately from a pine branch. The scene must remain clean and artistic, not cluttered.`,
 
-**Step 1: MASK GENERATION**
-- Create a pixel-perfect mask of the jewelry item exactly as it appears in the source image. This mask is a direct cutout.
+    // Style 2: Macro & Texture
+    `Macro & Texture: Focus on a close-up, textural interpretation of the theme. Place the jewelry on a surface that is a macro shot of a thematic element (e.g., sparkling snow, a satin ribbon, a wet autumn leaf). The background should be an extreme blur of related colors and light, creating an abstract and sophisticated mood.`
+];
 
-**Step 2: ENHANCEMENT OF ISOLATED ITEM**
-- Isolate the jewelry using the mask.
-- On the isolated item, perform the following:
-    - **Metal Color Correction:** Neutralize and remove any yellow/gold color cast from all SILVER surfaces. The metal must appear as clean, bright, neutral-toned silver.
-    - **Preserve Gem Colors:** Do NOT alter the hue of gemstones or enameled parts.
-    - **Detail Enhancement:** Apply a subtle sharpening and clarity adjustment to improve detail. Gently boost specular highlights for "sparkle".
+// --- HELPER FUNCTIONS ---
 
-**Step 3: FINAL COMPOSITION**
-- Create a new square (1:1 aspect ratio) canvas.
-- Fill the canvas with a solid background color: hex code #B0C4DE.
-- Place the enhanced, isolated jewelry item in the center of the canvas. The item must be exactly as it was in the original photo in terms of its angle and orientation.
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-Output ONLY the final, processed image data. Do not output any text.`;
+/**
+ * Handles API calls with an exponential backoff retry mechanism for rate limit errors.
+ */
+async function generateWithRetry(
+    ai: GoogleGenAI,
+    base64Image: string,
+    mimeType: string,
+    prompt: string, // The full, formatted prompt
+    maxRetries: number = 3
+): Promise<string | null> {
+    let attempt = 0;
+    let currentDelay = 5000; // 5 seconds initial delay for retry
 
-export async function enhanceJewelryImage(base64Image: string, mimeType: string): Promise<string | null> {
+    while (attempt < maxRetries) {
+        try {
+            const response = await ai.models.generateContent({
+                model: model,
+                contents: {
+                    parts: [
+                        { inlineData: { data: base64Image, mimeType: mimeType } },
+                        { text: prompt },
+                    ],
+                },
+                config: {
+                    responseModalities: [Modality.IMAGE],
+                },
+            });
+
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData) {
+                    return part.inlineData.data;
+                }
+            }
+            return null; // Successful call but no image data
+
+        } catch (error: any) {
+            const errorMessage = error.message?.toLowerCase() || '';
+            const isRateLimitError = errorMessage.includes('429') || errorMessage.includes('resource_exhausted') || errorMessage.includes('quota');
+
+            if (isRateLimitError && attempt < maxRetries - 1) {
+                console.warn(`Rate limit hit on attempt ${attempt + 1}. Retrying in ${currentDelay / 1000}s...`);
+                await delay(currentDelay);
+                currentDelay *= 2; // Exponential backoff
+                attempt++;
+            } else {
+                // For non-rate-limit errors or final attempt, re-throw the original error
+                throw error;
+            }
+        }
+    }
+    // This line is reached if all retries fail
+    throw new Error("Límite de peticiones excedido. No se pudo procesar la imagen después de varios intentos.");
+}
+
+// --- MAIN SERVICE FUNCTION ---
+
+export async function enhanceJewelryImage(
+    base64Image: string, 
+    mimeType: string, 
+    userTheme: string, 
+    stylesToGenerate: number[]
+): Promise<string[]> {
+    const API_KEY = process.env.API_KEY;
+
+    if (!API_KEY) {
+        throw new Error("La clave API no ha sido configurada. El procesamiento no puede continuar.");
+    }
+    
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+    let theme = userTheme.trim();
+    if (!theme) {
+        theme = 'A clean, professional studio background with a soft gradient from light gray to white.';
+    }
+    
     try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: {
-                parts: [
-                    {
-                        inlineData: {
-                            data: base64Image,
-                            mimeType: mimeType,
-                        },
-                    },
-                    {
-                        text: prompt,
-                    },
-                ],
-            },
-            config: {
-                responseModalities: [Modality.IMAGE],
-            },
+        const prompts = stylesToGenerate.map(index => {
+            const styleGuidance = creativeStyles[index];
+            if (!styleGuidance) throw new Error(`Style with index ${index} not found.`);
+            
+            return basePrompt
+                .replace('{{THEME}}', theme)
+                .replace('{{STYLE_GUIDANCE}}', styleGuidance);
         });
         
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) {
-                return part.inlineData.data;
+        const results: (string | null)[] = [];
+        for (const prompt of prompts) {
+            const result = await generateWithRetry(ai, base64Image, mimeType, prompt);
+            results.push(result);
+            if (prompts.length > 1) {
+                await delay(5000); // 5-second delay between on-demand generations
             }
         }
 
-        return null;
+        const validResults = results.filter((r): r is string => r !== null);
 
-    } catch (error) {
+        if (validResults.length !== prompts.length) {
+            throw new Error("No se pudieron generar todas las variaciones de la imagen solicitadas.");
+        }
+
+        return validResults;
+
+    } catch (error: any) {
         console.error("Error calling Gemini API:", error);
-        throw new Error("Failed to enhance image. Please check the console for more details.");
+        
+        const errorMessage = error.message?.toLowerCase() || '';
+
+        if (errorMessage.includes('429') || errorMessage.includes('resource_exhausted') || errorMessage.includes('quota')) {
+            throw new Error("Límite de peticiones excedido (Rate Limit). La API está recibiendo demasiadas solicitudes. Por favor, espera unos minutos antes de volver a intentarlo.");
+        }
+        if (errorMessage.includes('api key not valid')) {
+            throw new Error("La clave API proporcionada no es válida o ha caducado. Por favor, verifica tu configuración.");
+        }
+        if (errorMessage.includes('safety')) {
+            throw new Error("La solicitud fue bloqueada por políticas de seguridad. Intenta con una imagen o descripción de fondo diferente.");
+        }
+        
+        throw new Error("Ocurrió un error inesperado al contactar la API. Verifica tu conexión o inténtalo más tarde.");
     }
 }

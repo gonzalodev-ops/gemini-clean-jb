@@ -1,3 +1,4 @@
+
 // FIX: Implement Gemini service functions to power the API backend.
 // This file was previously a placeholder and caused server errors.
 import { GoogleGenAI, Modality, GenerateContentResponse } from "@google/genai";
@@ -40,11 +41,11 @@ export async function generateCatalogImage(base64Image: string, mimeType: string
 **RULE 1: PERFECT ISOLATION**
 - Identify every pixel of the jewelry in the input image.
 - Create a perfect, clean mask of the jewelry.
-- **FAILURE CONDITION:** The mask is incomplete, cutting off parts of the jewelry (e.g., shortening earring posts).
+- **FAILURE CONDITION:** The mask is incomplete, cutting off **any part** of the jewelry (e.g., shortening earring posts, clipping edges of the main piece, removing delicate chains). **All original pixels of the jewelry must be retained.**
 - **FAILURE CONDITION:** The mask includes elements not present in the original photo (e.g., adding earring posts that were not visible).
 
 **RULE 2: ENHANCEMENT OF THE ISOLATED JEWELRY**
-- **Metal Color:** The jewelry is silver. Neutralize and remove all yellow/gold color casts from metallic surfaces. The metal must look like clean, bright, neutral silver.
+- **Lighting & Metal:** Apply professional, bright studio lighting. The jewelry is silver. Neutralize and remove all yellow/gold color casts from metallic surfaces. The metal must look like clean, bright, neutral silver with realistic highlights and shadows.
 - **Gemstone Color:** Preserve the original color of all gemstones or enameled parts. Do not alter their hue.
 - **Detail:** Apply minor sharpening and clarity adjustments to improve detail. Gently increase specular highlights on gems and metal to add "sparkle" without oversaturating.
 - **FAILURE CONDITION:** Yellow/gold tints remain on the silver.
@@ -101,16 +102,17 @@ export async function generateThematicImages(base64Image: string, mimeType: stri
     const model = 'gemini-2.5-flash-image';
     
     const basePrompt = `
-TASK: You are a jewelry photography expert. Isolate the main jewelry piece from the input image and place it on a new, subtle, photorealistic background.
+TASK: You are a jewelry photography expert. Isolate ALL jewelry items from the input image and place them on a new, subtle, photorealistic background.
 THEME: "{{THEME}}"
 STYLE: "{{STYLE_GUIDANCE}}"
 
 CRITICAL RULES:
-1.  **Jewelry is the HERO:** The background must be simple, clean, and heavily blurred (strong bokeh) to not distract.
-2.  **Preserve Jewelry:** DO NOT alter the jewelry's shape, orientation, proportions, or original gemstone colors.
-3.  **Enhance Materials:** Apply professional studio lighting. Make silver look like clean, bright silver. Enhance gem clarity and sparkle.
-4.  **Natural Integration:** The final composition must look like a single, cohesive photograph.
-5.  **Output:** A single 1:1 square image. NO TEXT.
+1.  **Preserve the Entire Piece/Set:** This is the most important rule. If the input image shows a pair of earrings, the output **MUST** show both earrings. If it shows a necklace and pendant, both must be included. Do not remove any part of the original jewelry.
+2.  **Jewelry is the HERO:** The background must be simple, clean, and heavily blurred (strong bokeh) to not distract.
+3.  **Preserve Form & Color:** DO NOT alter the jewelry's shape, orientation, proportions, or original gemstone colors. The arrangement of the items relative to each other should be preserved.
+4.  **Enhance Materials:** Apply professional studio lighting. Make silver look like clean, bright silver. Enhance gem clarity and sparkle.
+5.  **Natural Integration:** The final composition must look like a single, cohesive photograph.
+6.  **Output:** A single 1:1 square image. NO TEXT.
 `;
     
     const styleGuidances = [
@@ -124,23 +126,31 @@ CRITICAL RULES:
             .replace('{{THEME}}', userTheme)
             .replace('{{STYLE_GUIDANCE}}', style)
     );
+    
+    const generatedImages: string[] = [];
+    for (const prompt of prompts) {
+        try {
+            const response = await ai.models.generateContent({
+                model,
+                contents: {
+                    parts: [
+                        { inlineData: { data: base64Image, mimeType } },
+                        { text: prompt },
+                    ],
+                },
+                config: {
+                    responseModalities: [Modality.IMAGE],
+                },
+            });
+            const enhancedImageBase64 = extractBase64FromResponse(response);
+            generatedImages.push(enhancedImageBase64);
+        } catch (error) {
+            console.error('Failed to generate one of the thematic images:', error);
+            // Continue to the next image even if one fails
+        }
+    }
 
-    const imagePromises = prompts.map(prompt => 
-        ai.models.generateContent({
-            model,
-            contents: {
-                parts: [
-                    { inlineData: { data: base64Image, mimeType } },
-                    { text: prompt },
-                ],
-            },
-            config: {
-                responseModalities: [Modality.IMAGE],
-            },
-        }).then(extractBase64FromResponse)
-    );
-
-    return Promise.all(imagePromises);
+    return generatedImages;
 }
 
 /**

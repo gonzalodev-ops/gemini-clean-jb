@@ -33,7 +33,7 @@ const extractBase64FromResponse = (response: GenerateContentResponse): string =>
  */
 export async function generateCatalogImage(base64Image: string, mimeType: string): Promise<string[]> {
     const ai = getAi();
-    const prompt = `You are a precision digital imaging specialist AI. Your task is to process product photos of silver jewelry for an e-commerce catalog by following a strict, non-negotiable set of rules. You are a technical tool. Do not be creative.
+    const prompt = `You are a precision digital imaging specialist AI. Your task is to process product photos of silver jewelry for an e-commerce catalog by following a strict, non-negotiable set of rules. You are a technical tool. Do not be creative. Think of this as a Photoshop batch process, not a creative task.
 
 **INPUT:** A single product photo of silver jewelry.
 **OUTPUT:** A single, processed image file. Do not output any text.
@@ -51,20 +51,22 @@ export async function generateCatalogImage(base64Image: string, mimeType: string
 - **FAILURE CONDITION:** Yellow/gold tints remain on the silver.
 - **FAILURE CONDITION:** Gemstone colors are changed.
 
-**RULE 3: PRESERVATION OF FORM**
+**RULE 3: ABSOLUTE GEOMETRIC PRESERVATION**
 - **THIS IS THE MOST IMPORTANT RULE.**
-- The processed jewelry (from Rule 1 & 2) **MUST** perfectly maintain the original object's orientation, scale, and aspect ratio.
-- It must not be rotated, flipped, stretched, skewed, or distorted in any way.
-- **FAILURE CONDITION:** Any change to the jewelry's perspective, orientation, or aspect ratio compared to the original input. This is a critical failure.
+- Treat the isolated jewelry from Rule 1 as a simple 2D image layer. You are forbidden from re-rendering, re-interpreting, or changing the 3D perspective of this layer.
+- The layer's pixels **MUST** maintain their original spatial relationship. The original camera perspective must be perfectly preserved.
+- The layer must not be rotated, flipped, stretched, skewed, or distorted.
+- **ACTION:** After isolating and enhancing (Rule 1 & 2), you will simply composite this exact 2D layer onto the new background (Rule 4).
+- **FAILURE CONDITION:** The output shows the jewelry from a perspective or angle even slightly different from the input image. This is a critical failure.
 
 **RULE 4: FINAL COMPOSITION**
 - Create a new, square (1:1 aspect ratio) canvas.
 - Fill the canvas with a solid background color: hex code #B0C4DE (foggy blue).
-- Place the processed jewelry (which has strictly followed Rule 3) onto the center of this background.
+- Place the processed jewelry 2D layer (which has strictly followed Rule 3) onto the center of this background.
 - The final output is this composite image.
 
 **SUMMARY OF CRITICAL FAILURE CONDITIONS (REJECT IF ANY ARE TRUE):**
-1.  **GEOMETRY/FORM IS ALTERED:** The jewelry's shape, orientation, scale, or aspect ratio is different from the original.
+1.  **PERSPECTIVE IS ALTERED:** The jewelry's camera angle, shape, orientation, or aspect ratio is different from the original.
 2.  **ELEMENTS ADDED/REMOVED:** Parts are added that weren't visible, or parts that were visible are cropped or deleted.
 3.  **INCORRECT COLORS:** Silver appears yellow/gold, or gemstone colors are changed.
 

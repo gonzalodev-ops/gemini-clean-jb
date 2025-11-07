@@ -1,23 +1,15 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { resizeImage } from './utils';
 import ThemeSelector from './components/ThemeSelector';
-import ApiKeyModal from './components/ApiKeyModal';
-import {
-  generateCatalogImage,
-  generateThematicImages,
-  generatePresentationVideo,
-  checkVideoOperation,
-} from './services/geminiService';
 import {
   UploadIcon,
   SparklesIcon,
   DownloadIcon,
   XMarkIcon,
-  ArrowPathIcon,
-  KeyIcon,
   PhotoIcon,
   VideoCameraIcon,
   TrashIcon,
+  StopIcon,
 } from './components/icons';
 
 // --- TYPE DEFINITIONS ---
@@ -58,11 +50,9 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState('Navidad');
   const [videoPrompt, setVideoPrompt] = useState('Una animación cinematográfica y elegante del producto, con suaves movimientos de cámara e iluminación de estudio.');
 
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState<boolean | undefined>(undefined);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoCheckIntervalsRef = useRef<Map<string, number>>(new Map());
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const isAnyJobProcessing = jobs.some(j => j.loading.catalog || j.loading.thematic || j.loading.video);
 
@@ -74,41 +64,36 @@ const App: React.FC = () => {
   }, []);
 
   // --- EFFECTS ---
-  useEffect(() => {
-    const checkKey = async () => {
-      if (typeof window.aistudio?.hasSelectedApiKey === 'function') {
-        try {
-          setHasApiKey(await window.aistudio.hasSelectedApiKey());
-        } catch (e) {
-          console.error("Error checking for API key:", e);
-          setHasApiKey(false);
-        }
-      } else {
-        setHasApiKey(false);
-      }
-    };
-    checkKey();
-  }, []);
-
-  useEffect(() => {
+   useEffect(() => {
     const intervals = videoCheckIntervalsRef.current;
     
+    const checkVideoStatus = async (job: ImageJob) => {
+      if (!job.videoResult?.operation) return;
+      try {
+        const response = await fetch('/api/video-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operation: job.videoResult.operation }),
+        });
+        if (!response.ok) throw new Error(`Server responded with ${response.status}`);
+        
+        const result = await response.json();
+
+        if (result.status === 'done') {
+            updateJob(job.id, { videoResult: { status: 'done', videoUrl: result.videoUrl }, loading: { ...job.loading, video: false }});
+        } else if (result.status === 'done_no_uri' || result.status === 'failed') {
+            updateJob(job.id, { error: 'La generación del video finalizó, pero no se pudo obtener el resultado.', videoResult: null, loading: { ...job.loading, video: false }});
+        } else {
+            updateJob(job.id, { videoResult: { ...job.videoResult, operation: result.operation } as VideoResult });
+        }
+      } catch (e: any) {
+        updateJob(job.id, { error: `Error al verificar el estado del video: ${e.message}`, videoResult: null, loading: { ...job.loading, video: false }});
+      }
+    };
+
     jobs.forEach(job => {
-      if (job.videoResult?.status === 'processing' && job.videoResult.operation && !intervals.has(job.id)) {
-        const intervalId = window.setInterval(async () => {
-          try {
-            const result = await checkVideoOperation(job.videoResult.operation);
-            if (result.status === 'done') {
-              updateJob(job.id, { videoResult: { status: 'done', videoUrl: result.videoUrl }, loading: { ...job.loading, video: false }});
-            } else if (result.status === 'done_no_uri' || result.status === 'failed') {
-              updateJob(job.id, { error: 'La generación del video finalizó, pero no se pudo obtener el resultado.', videoResult: null, loading: { ...job.loading, video: false }});
-            } else {
-               updateJob(job.id, { videoResult: { ...job.videoResult, operation: result.operation } as VideoResult });
-            }
-          } catch (e: any) {
-            updateJob(job.id, { error: `Error al verificar el estado del video: ${e.message}`, videoResult: null, loading: { ...job.loading, video: false }});
-          }
-        }, 10000);
+      if (job.videoResult?.status === 'processing' && !intervals.has(job.id)) {
+        const intervalId = window.setInterval(() => checkVideoStatus(job), 10000);
         intervals.set(job.id, intervalId);
       } else if (job.videoResult?.status !== 'processing' && intervals.has(job.id)) {
         clearInterval(intervals.get(job.id));
@@ -127,7 +112,6 @@ const App: React.FC = () => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    // FIX: Explicitly type 'file' as 'File' to resolve TypeScript errors.
     const newJobsPromises = Array.from(files).map(async (file: File) => {
       try {
         const { base64, mimeType } = await resizeImage(file, 1024);
@@ -152,11 +136,13 @@ const App: React.FC = () => {
 
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
-
+  
   const handleClearAll = useCallback(() => {
     jobs.forEach(job => URL.revokeObjectURL(job.source.url));
     videoCheckIntervalsRef.current.forEach(id => clearInterval(id));
     videoCheckIntervalsRef.current.clear();
+    abortControllersRef.current.forEach(controller => controller.abort());
+    abortControllersRef.current.clear();
     setJobs([]);
   }, [jobs]);
 
@@ -170,78 +156,99 @@ const App: React.FC = () => {
                 clearInterval(intervalId);
                 videoCheckIntervalsRef.current.delete(idToRemove);
             }
+            const controller = abortControllersRef.current.get(idToRemove);
+            if (controller) {
+                controller.abort();
+                abortControllersRef.current.delete(idToRemove);
+            }
         }
         return prev.filter(job => job.id !== idToRemove);
     });
   }, []);
 
+  const handleStopGeneration = useCallback(() => {
+    abortControllersRef.current.forEach(controller => controller.abort());
+    abortControllersRef.current.clear();
+    setJobs(prev => prev.map(j => ({
+      ...j,
+      loading: { catalog: false, thematic: false, video: false }
+    })));
+  }, []);
+
   const createApiHandler = (
     type: keyof LoadingState,
-    apiCall: (job: ImageJob, ...args: any[]) => Promise<any>,
+    apiEndpoint: string,
+    getBody: (job: ImageJob) => Record<string, any>,
     resultUpdater: (job: ImageJob, result: any) => Partial<ImageJob>
-  ) => async (...args: any[]) => {
-      jobs.forEach(async (job) => {
-          updateJob(job.id, {
-              loading: { ...job.loading, [type]: true },
-              error: null,
-              ...(type === 'catalog' && { catalogImage: null }),
-              ...(type === 'thematic' && { thematicImages: [] }),
-              ...(type === 'video' && { videoResult: null }),
-          });
-          try {
-              const result = await apiCall(job, ...args);
-              const update = resultUpdater(job, result);
-              updateJob(job.id, { ...update, loading: { ...job.loading, [type]: false } });
-          } catch (err: any) {
-              console.error(`Error processing job ${job.id} for ${type}:`, err);
-              if (type === 'video' && (err.message?.toLowerCase().includes('not found') || err.message?.toLowerCase().includes('api key not valid'))) {
-                  setHasApiKey(false);
-                  updateJob(job.id, { error: "Clave de API no válida. Por favor, selecciona una nueva.", loading: { ...job.loading, [type]: false } });
-                  setIsApiKeyModalOpen(true);
-              } else {
-                  updateJob(job.id, { error: `Error en ${type}: ${err.message}`, loading: { ...job.loading, [type]: false } });
-              }
-          }
+  ) => async () => {
+    jobs.forEach(async (job) => {
+      const controller = new AbortController();
+      abortControllersRef.current.set(job.id, controller);
+
+      updateJob(job.id, {
+        loading: { ...job.loading, [type]: true },
+        error: null,
+        ...(type === 'catalog' && { catalogImage: null }),
+        ...(type === 'thematic' && { thematicImages: [] }),
+        ...(type === 'video' && { videoResult: null }),
       });
+
+      try {
+        const response = await fetch(apiEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(getBody(job)),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Server responded with ${response.status}`);
+        }
+        
+        const result = await response.json();
+        const update = resultUpdater(job, result);
+        updateJob(job.id, { ...update, loading: { ...job.loading, [type]: false } });
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          console.log(`Generation for job ${job.id} was cancelled.`);
+          updateJob(job.id, { error: 'Generación cancelada.', loading: { ...job.loading, [type]: false }});
+        } else {
+          console.error(`Error processing job ${job.id} for ${type}:`, err);
+          updateJob(job.id, { error: `Error en ${type}: ${err.message}`, loading: { ...job.loading, [type]: false } });
+        }
+      } finally {
+         abortControllersRef.current.delete(job.id);
+      }
+    });
   };
 
   const handleGenerateCatalog = createApiHandler(
-      'catalog',
-      (job) => generateCatalogImage(job.source.base64, job.source.mimeType),
-      (_, result) => ({ catalogImage: result[0] })
+    'catalog',
+    '/api/catalog',
+    (job) => ({ base64Image: job.source.base64, mimeType: job.source.mimeType }),
+    (_, result) => ({ catalogImage: result.images[0] })
   );
 
   const handleGenerateThematic = createApiHandler(
-      'thematic',
-      (job) => generateThematicImages(job.source.base64, job.source.mimeType, theme),
-      (_, result) => ({ thematicImages: result })
+    'thematic',
+    '/api/thematic',
+    (job) => ({ base64Image: job.source.base64, mimeType: job.source.mimeType, theme }),
+    (_, result) => ({ thematicImages: result.images })
   );
 
   const handleGenerateVideo = createApiHandler(
-      'video',
-      (job) => {
-          if (hasApiKey === undefined) throw new Error("API key state is not determined.");
-          if (!hasApiKey) {
-              setIsApiKeyModalOpen(true);
-              throw new Error("API key required.");
-          }
-          return generatePresentationVideo(job.source.base64, job.source.mimeType, videoPrompt);
-      },
-      (_, operation) => ({ videoResult: { status: 'processing', operation } })
+    'video',
+    '/api/video-generate',
+    (job) => ({ base64Image: job.source.base64, mimeType: job.source.mimeType, prompt: videoPrompt }),
+    (_, result) => ({ videoResult: { status: 'processing', operation: result.operation } })
   );
-  
-  const handleApiKeySelected = () => {
-    setIsApiKeyModalOpen(false);
-    setHasApiKey(true);
-    handleGenerateVideo();
-  };
 
   const triggerFileSelect = () => fileInputRef.current?.click();
 
   // --- RENDER LOGIC ---
   return (
     <>
-      <ApiKeyModal isOpen={isApiKeyModalOpen} onClose={() => setIsApiKeyModalOpen(false)} onKeySelected={handleApiKeySelected} />
       <div className="bg-slate-50 min-h-screen font-sans">
         <header className="bg-white border-b border-slate-200">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center gap-3">
@@ -287,6 +294,14 @@ const App: React.FC = () => {
               
               {jobs.length > 0 && (
                 <div className="space-y-6">
+                   {isAnyJobProcessing && (
+                    <div className="mt-4">
+                        <button onClick={handleStopGeneration} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2">
+                            <StopIcon className="w-5 h-5" />
+                            Detener Generación
+                        </button>
+                    </div>
+                   )}
                   <ControlPanel
                     title="Foto de Catálogo"
                     icon={<PhotoIcon className="w-5 h-5 text-slate-500"/>}
@@ -315,11 +330,6 @@ const App: React.FC = () => {
                     buttonText="Generar Video"
                     isProcessing={jobs.some(j => j.loading.video)}
                     isDisabled={isAnyJobProcessing}
-                    headerAddon={!hasApiKey && hasApiKey !== undefined && (
-                      <button onClick={() => setIsApiKeyModalOpen(true)} className="flex items-center gap-1 text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-full hover:bg-orange-200">
-                        <KeyIcon className="w-3 h-3"/> Se requiere clave
-                      </button>
-                    )}
                   >
                     <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} disabled={isAnyJobProcessing} rows={2} className="w-full text-sm px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-50"></textarea>
                   </ControlPanel>
@@ -358,16 +368,14 @@ const ControlPanel: React.FC<{
   buttonText: string,
   isProcessing: boolean,
   isDisabled: boolean,
-  children?: React.ReactNode,
-  headerAddon?: React.ReactNode,
-}> = ({ title, icon, description, onGenerate, buttonText, isProcessing, isDisabled, children, headerAddon }) => (
+  children?: React.ReactNode
+}> = ({ title, icon, description, onGenerate, buttonText, isProcessing, isDisabled, children }) => (
     <div className="p-4 border border-slate-200 rounded-lg">
         <div className="flex justify-between items-start">
             <div>
                 <h3 className="font-semibold text-slate-800 flex items-center gap-2">{icon} {title}</h3>
                 <p className="text-sm text-slate-500 mt-1 mb-3">{description}</p>
             </div>
-            {headerAddon}
         </div>
         {children}
         <button onClick={onGenerate} disabled={isDisabled} className="w-full mt-3 bg-slate-800 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2">

@@ -1,12 +1,14 @@
 
-// FIX: Implement Gemini service functions to power the API backend.
-// This file was previously a placeholder and caused server errors.
 import { GoogleGenAI, Modality, GenerateContentResponse } from "@google/genai";
 
-// Creates a new GoogleGenAI instance.
-// For video generation, this ensures the latest user-selected API key from process.env is used for each call.
-const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
-
+// Creates a new GoogleGenAI instance using the API key from the server environment.
+const getAi = () => {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+        throw new Error("API_KEY is not configured in the server environment.");
+    }
+    return new GoogleGenAI({ apiKey });
+};
 
 /**
  * Extracts the base64 data from a Gemini API image generation response.
@@ -189,14 +191,7 @@ export async function checkVideoOperation(operation: any): Promise<any> {
     if (updatedOperation.done) {
         const downloadLink = updatedOperation.response?.generatedVideos?.[0]?.video?.uri;
         if (downloadLink) {
-            const apiKey = process.env.API_KEY;
-            if (!apiKey) {
-                console.error('API_KEY is not available to sign the video URL.');
-                return { status: 'failed', message: 'API key not found on server.', operation: updatedOperation };
-            }
-            // The video URI from Veo needs the API key appended for the client to access it.
-            const videoUrlWithKey = `${downloadLink}&key=${apiKey}`;
-            return { status: 'done', videoUrl: videoUrlWithKey, operation: updatedOperation };
+            return { status: 'done', videoUrl: downloadLink, operation: updatedOperation };
         } else {
             console.error('Video operation is done but no download URI was found.', updatedOperation);
             return { status: 'done_no_uri', operation: updatedOperation };

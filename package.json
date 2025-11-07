@@ -12,7 +12,8 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "@google/genai": "^1.28.0",
-    "@vercel/node": "^5.5.4"
+    "@vercel/node": "^5.5.4",
+    "react-dropzone": "^14.3.8"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

@@ -1,8 +1,1 @@
-
-{
-  "functions": {
-    "api/enhance.ts": {
-      "maxDuration": 60
-    }
-  }
-}
+{}

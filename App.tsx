@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { resizeImage } from './utils';
 import ThemeSelector from './components/ThemeSelector';
@@ -10,6 +11,7 @@ import {
   VideoCameraIcon,
   TrashIcon,
   StopIcon,
+  ArrowPathIcon,
 } from './components/icons';
 
 // --- TYPE DEFINITIONS ---
@@ -47,7 +49,7 @@ type ImageJob = {
 const App: React.FC = () => {
   // --- STATE MANAGEMENT ---
   const [jobs, setJobs] = useState<ImageJob[]>([]);
-  const [theme, setTheme] = useState('Navidad');
+  const [theme, setTheme] = useState('Tropical Summer');
   const [videoPrompt, setVideoPrompt] = useState('Una animación cinematográfica y elegante del producto, con suaves movimientos de cámara e iluminación de estudio.');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -146,26 +148,6 @@ const App: React.FC = () => {
     setJobs([]);
   }, [jobs]);
 
-  const handleRemoveJob = useCallback((idToRemove: string) => {
-    setJobs(prev => {
-        const jobToRemove = prev.find(j => j.id === idToRemove);
-        if (jobToRemove) {
-            URL.revokeObjectURL(jobToRemove.source.url);
-            const intervalId = videoCheckIntervalsRef.current.get(idToRemove);
-            if(intervalId) {
-                clearInterval(intervalId);
-                videoCheckIntervalsRef.current.delete(idToRemove);
-            }
-            const controller = abortControllersRef.current.get(idToRemove);
-            if (controller) {
-                controller.abort();
-                abortControllersRef.current.delete(idToRemove);
-            }
-        }
-        return prev.filter(job => job.id !== idToRemove);
-    });
-  }, []);
-
   const handleStopGeneration = useCallback(() => {
     abortControllersRef.current.forEach(controller => controller.abort());
     abortControllersRef.current.clear();
@@ -248,147 +230,137 @@ const App: React.FC = () => {
 
   // --- RENDER LOGIC ---
   return (
-    <>
-      <div className="bg-slate-50 min-h-screen font-sans">
-        <header className="bg-white border-b border-slate-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center gap-3">
-            <SparklesIcon className="w-8 h-8 text-indigo-600" />
-            <h1 className="text-2xl font-bold text-slate-800">Estudio de Productos con IA</h1>
-          </div>
-        </header>
+    <div className="bg-slate-100 min-h-screen font-sans text-slate-800">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="text-center mb-12">
+          <h1 className="text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">Estudio de Fotografía de Joyería con IA</h1>
+          <p className="mt-4 text-lg text-slate-600">Transforma tus fotos de productos con el poder de Gemini.</p>
+        </div>
 
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* --- INPUT & CONTROLS --- */}
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 self-start">
-              {jobs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-12 text-center">
-                  <UploadIcon className="w-12 h-12 text-slate-400" />
-                  <h3 className="mt-4 text-lg font-medium text-slate-900">Sube tus fotos de producto</h3>
-                  <p className="mt-1 text-sm text-slate-500">Puedes seleccionar varios archivos a la vez.</p>
-                  <button onClick={triggerFileSelect} className="mt-4 bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
-                    Seleccionar Archivos
-                  </button>
-                  <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" multiple />
-                </div>
-              ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+          {/* --- INPUT & CONTROLS --- */}
+          {jobs.length === 0 ? (
+            <div className="lg:col-span-2 flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-12 text-center bg-white">
+              <UploadIcon className="w-12 h-12 text-slate-400" />
+              <h3 className="mt-4 text-lg font-medium text-slate-900">Sube tus fotos de producto</h3>
+              <p className="mt-1 text-sm text-slate-500">Puedes seleccionar varios archivos a la vez para procesarlos en lote.</p>
+              <button onClick={triggerFileSelect} className="mt-6 bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors">
+                Seleccionar Archivos
+              </button>
+              <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" multiple />
+            </div>
+          ) : (
+            <>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 self-start space-y-6">
                 <div>
                   <div className="flex justify-between items-center mb-4">
-                      <h2 className="text-xl font-semibold text-slate-800">Imágenes Cargadas ({jobs.length})</h2>
-                      <button onClick={handleClearAll} className="text-sm font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
-                          <TrashIcon className="w-4 h-4" /> Limpiar Todo
-                      </button>
+                    <h2 className="text-xl font-semibold text-slate-900">Imagen Original</h2>
+                    <button onClick={handleClearAll} className="text-sm font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5">
+                      <ArrowPathIcon className="w-4 h-4" /> Empezar de nuevo
+                    </button>
                   </div>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4 mb-6">
-                    {jobs.map(job => (
-                      <div key={job.id} className="relative group">
-                        <img src={job.source.url} alt="Producto" className="aspect-square w-full rounded-md object-cover" />
-                        <button onClick={() => handleRemoveJob(job.id)} className="absolute top-1 right-1 bg-black bg-opacity-50 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
+                  <div className="aspect-square bg-slate-100 rounded-lg overflow-hidden">
+                    <img src={jobs[0].source.url} alt="Producto principal" className="w-full h-full object-cover" />
                   </div>
                 </div>
-              )}
-              
-              {jobs.length > 0 && (
-                <div className="space-y-6">
+
+                <div className="space-y-4">
                    {isAnyJobProcessing && (
-                    <div className="mt-4">
-                        <button onClick={handleStopGeneration} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2">
+                    <div className="pt-2">
+                        <button onClick={handleStopGeneration} className="w-full bg-red-600 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2">
                             <StopIcon className="w-5 h-5" />
                             Detener Generación
                         </button>
                     </div>
                    )}
-                  <ControlPanel
-                    title="Foto de Catálogo"
-                    icon={<PhotoIcon className="w-5 h-5 text-slate-500"/>}
-                    description="Genera una imagen limpia con fondo neutro, perfecta para tu tienda online."
-                    onGenerate={handleGenerateCatalog}
-                    buttonText="Generar Catálogo"
-                    isProcessing={jobs.some(j => j.loading.catalog)}
-                    isDisabled={isAnyJobProcessing}
-                  />
-                  <ControlPanel
-                    title="Fotos de Temporada"
-                    icon={<SparklesIcon className="w-5 h-5 text-slate-500"/>}
-                    description="Crea composiciones creativas para campañas de marketing y redes sociales."
-                    onGenerate={handleGenerateThematic}
-                    buttonText="Generar 3 Estilos"
-                    isProcessing={jobs.some(j => j.loading.thematic)}
-                    isDisabled={isAnyJobProcessing}
-                  >
-                    <ThemeSelector theme={theme} setTheme={setTheme} disabled={isAnyJobProcessing} />
-                  </ControlPanel>
-                  <ControlPanel
-                    title="Video de Presentación"
-                    icon={<VideoCameraIcon className="w-5 h-5 text-slate-500"/>}
-                    description="Crea un video corto y dinámico para destacar tu producto."
-                    onGenerate={handleGenerateVideo}
-                    buttonText="Generar Video"
-                    isProcessing={jobs.some(j => j.loading.video)}
-                    isDisabled={isAnyJobProcessing}
-                  >
-                    <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} disabled={isAnyJobProcessing} rows={2} className="w-full text-sm px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-50"></textarea>
-                  </ControlPanel>
-                </div>
-              )}
-            </div>
+                  {/* Catalog Section */}
+                  <div className="border-t border-slate-200 pt-5">
+                      <div className="flex items-start gap-4">
+                          <div className="text-indigo-600 flex-shrink-0"><PhotoIcon className="w-6 h-6"/></div>
+                          <div>
+                              <h3 className="font-semibold text-slate-800">Foto de Catálogo</h3>
+                              <p className="text-sm text-slate-500 mt-1 mb-3">Genera una imagen limpia y profesional sobre un fondo neutro, perfecta para tu tienda online.</p>
+                          </div>
+                      </div>
+                      <button onClick={handleGenerateCatalog} disabled={isAnyJobProcessing} className="w-full bg-indigo-600 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-indigo-700 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                          <SparklesIcon className="w-5 h-5"/>
+                          {jobs.some(j => j.loading.catalog) ? 'Generando...' : 'Generar'}
+                      </button>
+                  </div>
 
-            {/* --- RESULTS --- */}
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200">
-                <h2 className="text-xl font-semibold text-slate-800 mb-4">Resultados</h2>
-                {jobs.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full text-center text-slate-500">
-                        <PhotoIcon className="w-16 h-16 text-slate-300"/>
-                        <p className="mt-4">Los resultados de tus generaciones aparecerán aquí.</p>
-                    </div>
+                  {/* Thematic Section */}
+                  <div className="border-t border-slate-200 pt-5">
+                      <div className="flex items-start gap-4">
+                          <div className="text-amber-500 flex-shrink-0"><SparklesIcon className="w-6 h-6"/></div>
+                          <div>
+                              <h3 className="font-semibold text-slate-800">Fotos de Temporada</h3>
+                              <p className="text-sm text-slate-500 mt-1">Crea 3 imágenes creativas y temáticas para tus campañas de marketing o redes sociales.</p>
+                          </div>
+                      </div>
+                      <div className="mt-3">
+                        <ThemeSelector theme={theme} setTheme={setTheme} disabled={isAnyJobProcessing} />
+                      </div>
+                      <button onClick={handleGenerateThematic} disabled={isAnyJobProcessing} className="w-full mt-3 bg-amber-500 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-amber-600 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                          <SparklesIcon className="w-5 h-5"/>
+                          {jobs.some(j => j.loading.thematic) ? 'Generando...' : 'Generar 3 Estilos'}
+                      </button>
+                  </div>
+
+                  {/* Video Section */}
+                  <div className="border-t border-slate-200 pt-5">
+                      <div className="flex items-start gap-4">
+                          <div className="text-slate-500 flex-shrink-0"><VideoCameraIcon className="w-6 h-6"/></div>
+                          <div>
+                              <h3 className="font-semibold text-slate-800">Video de Presentación</h3>
+                              <p className="text-sm text-slate-500 mt-1">Crea un video corto y dinámico para destacar tu producto.</p>
+                          </div>
+                      </div>
+                      <div className="mt-3">
+                        <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} disabled={isAnyJobProcessing} rows={2} className="w-full text-sm px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-50"></textarea>
+                      </div>
+                      <button onClick={handleGenerateVideo} disabled={isAnyJobProcessing} className="w-full mt-3 bg-slate-800 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                          <VideoCameraIcon className="w-5 h-5"/>
+                          {jobs.some(j => j.loading.video) ? 'Generando...' : 'Generar Video'}
+                      </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* --- RESULTS --- */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h2 className="text-xl font-semibold text-slate-900 mb-4">Resultados Generados</h2>
+                {jobs.every(j => !j.catalogImage && j.thematicImages.length === 0 && !j.videoResult && !isAnyJobProcessing) ? (
+                  <div className="bg-slate-50 rounded-lg flex items-center justify-center text-center h-[500px]">
+                    <p className="text-slate-500">Tus imágenes y videos aparecerán aquí.</p>
+                  </div>
                 ) : (
-                    <div className="space-y-8">
-                        {jobs.map(job => <ResultCard key={job.id} job={job} />)}
-                    </div>
+                  <div className="space-y-8">
+                    {jobs.map(job => <ResultCard key={job.id} job={job} totalJobs={jobs.length} />)}
+                  </div>
                 )}
-            </div>
-          </div>
-        </main>
-      </div>
-    </>
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+    </div>
   );
 };
 
 // --- SUB-COMPONENTS ---
-
-const ControlPanel: React.FC<{
-  title: string,
-  icon: React.ReactNode,
-  description: string,
-  onGenerate: () => void,
-  buttonText: string,
-  isProcessing: boolean,
-  isDisabled: boolean,
-  children?: React.ReactNode
-}> = ({ title, icon, description, onGenerate, buttonText, isProcessing, isDisabled, children }) => (
-    <div className="p-4 border border-slate-200 rounded-lg">
-        <div className="flex justify-between items-start">
-            <div>
-                <h3 className="font-semibold text-slate-800 flex items-center gap-2">{icon} {title}</h3>
-                <p className="text-sm text-slate-500 mt-1 mb-3">{description}</p>
-            </div>
-        </div>
-        {children}
-        <button onClick={onGenerate} disabled={isDisabled} className="w-full mt-3 bg-slate-800 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-            {isProcessing ? 'Procesando...' : buttonText}
-        </button>
-    </div>
-);
-
-const ResultCard: React.FC<{ job: ImageJob }> = ({ job }) => (
-    <div className="border-b border-slate-200 pb-8 last:border-b-0">
+const ResultCard: React.FC<{ job: ImageJob; totalJobs: number }> = ({ job, totalJobs }) => {
+    // FIX: Extract filename robustly. `job.id` is `filename-timestamp`.
+    const filename = job.id.slice(0, job.id.lastIndexOf('-'));
+    return (
+    <div className="border-b border-slate-200 pb-8 last:border-b-0 last:pb-0">
          <div className="flex items-center gap-3 mb-4">
-            <img src={job.source.url} className="w-16 h-16 rounded-md object-cover" />
-            <h3 className="font-semibold text-slate-700 truncate">{job.source.url.split('/').pop()}</h3>
+            <img src={job.source.url} className="w-16 h-16 rounded-md object-cover flex-shrink-0" />
+            <div className='min-w-0'>
+              {/* FIX: Display the actual filename instead of a blob URL's UUID. */}
+              <h3 className="font-semibold text-slate-700 truncate text-sm">{filename}</h3>
+              {/* FIX: `jobs` is not in scope here. Use `totalJobs` prop. The original sub-text was redundant with filename in title. */}
+              {totalJobs > 1 && <p className="text-xs text-slate-500">Procesando...</p>}
+            </div>
         </div>
 
         {job.error && (
@@ -418,29 +390,36 @@ const ResultCard: React.FC<{ job: ImageJob }> = ({ job }) => (
             </ResultSection>
         </div>
     </div>
-);
+    );
+};
 
-const ResultSection: React.FC<{ title: string, isLoading: boolean, children: React.ReactNode }> = ({ title, isLoading, children }) => (
-    <div>
-        <h4 className="text-md font-semibold text-slate-600 mb-2">{title}</h4>
-        {isLoading && <LoadingSpinner />}
-        {!isLoading && children}
-    </div>
-);
+const ResultSection: React.FC<{ title: string, isLoading: boolean, children: React.ReactNode }> = ({ title, isLoading, children }) => {
+    const hasContent = React.Children.count(children) > 0;
+    if (!isLoading && !hasContent) {
+        return null;
+    }
+    return (
+      <div>
+          <h4 className="text-md font-semibold text-slate-600 mb-2">{title}</h4>
+          {isLoading && <LoadingSpinner />}
+          {!isLoading && children}
+      </div>
+    );
+};
 
 const ImageResult: React.FC<{ src: string, alt: string }> = ({ src, alt }) => (
     <div className="group relative">
         <img src={src} alt={alt} className="w-full rounded-lg shadow-md" />
-        <a href={src} download={`${alt.replace(/\s+/g, '_')}.png`} className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+        <a href={src} download={`${alt.replace(/\s+/g, '_')}.png`} className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">
             <DownloadIcon className="w-5 h-5" />
         </a>
     </div>
 );
 
 const VideoResultPlayer: React.FC<{url: string}> = ({url}) => (
-    <div className="relative">
+    <div className="relative group">
         <video src={url} controls autoPlay loop className="w-full rounded-lg shadow-md"></video>
-         <a href={url} download="presentacion_producto.mp4" className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full hover:bg-opacity-75 transition-colors">
+         <a href={url} download="presentacion_producto.mp4" className="absolute top-2 right-2 bg-black bg-opacity-50 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">
             <DownloadIcon className="w-5 h-5" />
         </a>
     </div>

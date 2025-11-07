@@ -32,6 +32,43 @@ const extractBase64FromResponse = (response: GenerateContentResponse): string =>
  */
 export async function generateCatalogImage(base64Image: string, mimeType: string): Promise<string[]> {
     const ai = getAi();
+    const prompt = `You are a precision digital imaging specialist AI. Your task is to process product photos of silver jewelry for an e-commerce catalog by following a strict, non-negotiable set of rules. You are a technical tool. Do not be creative.
+
+**INPUT:** A single product photo of silver jewelry.
+**OUTPUT:** A single, processed image file. Do not output any text.
+
+**RULE 1: PERFECT ISOLATION**
+- Identify every pixel of the jewelry in the input image.
+- Create a perfect, clean mask of the jewelry.
+- **FAILURE CONDITION:** The mask is incomplete, cutting off parts of the jewelry (e.g., shortening earring posts).
+- **FAILURE CONDITION:** The mask includes elements not present in the original photo (e.g., adding earring posts that were not visible).
+
+**RULE 2: ENHANCEMENT OF THE ISOLATED JEWELRY**
+- **Metal Color:** The jewelry is silver. Neutralize and remove all yellow/gold color casts from metallic surfaces. The metal must look like clean, bright, neutral silver.
+- **Gemstone Color:** Preserve the original color of all gemstones or enameled parts. Do not alter their hue.
+- **Detail:** Apply minor sharpening and clarity adjustments to improve detail. Gently increase specular highlights on gems and metal to add "sparkle" without oversaturating.
+- **FAILURE CONDITION:** Yellow/gold tints remain on the silver.
+- **FAILURE CONDITION:** Gemstone colors are changed.
+
+**RULE 3: PRESERVATION OF FORM**
+- **THIS IS THE MOST IMPORTANT RULE.**
+- The processed jewelry (from Rule 1 & 2) **MUST** perfectly maintain the original object's orientation, scale, and aspect ratio.
+- It must not be rotated, flipped, stretched, skewed, or distorted in any way.
+- **FAILURE CONDITION:** Any change to the jewelry's perspective, orientation, or aspect ratio compared to the original input. This is a critical failure.
+
+**RULE 4: FINAL COMPOSITION**
+- Create a new, square (1:1 aspect ratio) canvas.
+- Fill the canvas with a solid background color: hex code #B0C4DE (foggy blue).
+- Place the processed jewelry (which has strictly followed Rule 3) onto the center of this background.
+- The final output is this composite image.
+
+**SUMMARY OF CRITICAL FAILURE CONDITIONS (REJECT IF ANY ARE TRUE):**
+1.  **GEOMETRY/FORM IS ALTERED:** The jewelry's shape, orientation, scale, or aspect ratio is different from the original.
+2.  **ELEMENTS ADDED/REMOVED:** Parts are added that weren't visible, or parts that were visible are cropped or deleted.
+3.  **INCORRECT COLORS:** Silver appears yellow/gold, or gemstone colors are changed.
+
+Output ONLY the final, edited image data.`;
+    
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
@@ -43,7 +80,7 @@ export async function generateCatalogImage(base64Image: string, mimeType: string
                     },
                 },
                 {
-                    text: 'Given this product image, create a photorealistic, professional catalog image. Remove the original background and replace it with a clean, solid light gray background (hex #f0f0f0). Ensure the product is well-lit, centered, and maintains its original details and aspect ratio. The final image should be sharp and high-quality, suitable for an e-commerce website.',
+                    text: prompt,
                 },
             ],
         },
@@ -63,11 +100,30 @@ export async function generateThematicImages(base64Image: string, mimeType: stri
     const ai = getAi();
     const model = 'gemini-2.5-flash-image';
     
-    const prompts = [
-        `Create a photorealistic lifestyle image of this product in a setting inspired by the theme: "${userTheme}". The product should be the main focus, naturally integrated into a scene that evokes the theme's atmosphere. Use creative lighting and composition.`,
-        `Generate a high-fashion, editorial-style image of this product. The background and props should be abstract and artistic, reflecting the core concept of "${userTheme}". Think bold colors and dramatic shadows.`,
-        `Produce a flat-lay or top-down composition featuring this product, surrounded by objects and textures that relate to the theme "${userTheme}". The arrangement should be aesthetically pleasing and well-balanced.`
+    const basePrompt = `
+TASK: You are a jewelry photography expert. Isolate the main jewelry piece from the input image and place it on a new, subtle, photorealistic background.
+THEME: "{{THEME}}"
+STYLE: "{{STYLE_GUIDANCE}}"
+
+CRITICAL RULES:
+1.  **Jewelry is the HERO:** The background must be simple, clean, and heavily blurred (strong bokeh) to not distract.
+2.  **Preserve Jewelry:** DO NOT alter the jewelry's shape, orientation, proportions, or original gemstone colors.
+3.  **Enhance Materials:** Apply professional studio lighting. Make silver look like clean, bright silver. Enhance gem clarity and sparkle.
+4.  **Natural Integration:** The final composition must look like a single, cohesive photograph.
+5.  **Output:** A single 1:1 square image. NO TEXT.
+`;
+    
+    const styleGuidances = [
+        "Photorealistic lifestyle. The product is naturally integrated into a scene that evokes the theme's atmosphere. Use creative, soft lighting.",
+        "High-fashion, editorial-style. The background and props are abstract and artistic, reflecting the theme's core concept. Think bold colors and dramatic shadows.",
+        "Flat-lay or top-down composition. The product is surrounded by objects and textures related to the theme. The arrangement is aesthetically pleasing and well-balanced."
     ];
+
+    const prompts = styleGuidances.map(style => 
+        basePrompt
+            .replace('{{THEME}}', userTheme)
+            .replace('{{STYLE_GUIDANCE}}', style)
+    );
 
     const imagePromises = prompts.map(prompt => 
         ai.models.generateContent({

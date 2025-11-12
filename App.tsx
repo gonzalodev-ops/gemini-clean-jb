@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { resizeImage } from './utils';
 import ThemeSelector from './components/ThemeSelector';
-import { UploadIcon, SparklesIcon, XMarkIcon, ArrowPathIcon, KeyIcon, PhotoIcon, VideoCameraIcon, DownloadIcon, StopIcon, TrashIcon } from './components/icons';
+import { UploadIcon, SparklesIcon, XMarkIcon, ArrowPathIcon, KeyIcon, PhotoIcon, VideoCameraIcon, DownloadIcon, StopIcon, TrashIcon, TagIcon } from './components/icons';
 
 type OriginalImage = {
   file: File;
@@ -20,21 +20,16 @@ type Job = {
   catalogResult: { images: string[], status: JobStatus };
   thematicResult: { images: string[], status: JobStatus };
   videoResult: { url: string | null, status: JobStatus, message: string };
+  bannerResult: { image: string | null, status: JobStatus };
   abortController: AbortController;
 };
 
 
-// Define window.aistudio for TypeScript
-// FIX: The original declaration caused a type conflict. By defining a named interface `AIStudio` and using it, we align with the expected type and resolve the error.
-interface AIStudio {
-  hasSelectedApiKey: () => Promise<boolean>;
-  openSelectKey: () => Promise<void>;
-}
-declare global {
-  interface Window {
-    aistudio?: AIStudio;
-  }
-}
+// FIX: Removed the conflicting global declaration for `window.aistudio`.
+// The TypeScript error indicates that this property is already declared globally elsewhere with the type `AIStudio`.
+// Re-declaring it here with an inline type causes a conflict.
+// By removing this block, the component will use the existing global type definition.
+
 
 const App: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -48,14 +43,16 @@ const App: React.FC = () => {
   const pollingIntervalsRef = useRef<Map<string, number>>(new Map());
 
   // Check for API key on mount
-  useState(() => {
+  // FIX: Replaced `useState` with `useEffect` for performing side effects on component mount.
+  // `useState` initializer should not be used for side effects.
+  useEffect(() => {
     const checkApiKey = async () => {
       if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
         setApiKeySelected(true);
       }
     };
     checkApiKey();
-  });
+  }, []);
   
   // Cleanup polling intervals on unmount
   useEffect(() => {
@@ -89,6 +86,7 @@ const App: React.FC = () => {
         catalogResult: { images: [], status: 'pending' },
         thematicResult: { images: [], status: 'pending' },
         videoResult: { url: null, status: 'pending', message: '' },
+        bannerResult: { image: null, status: 'pending' },
         abortController: new AbortController(),
       };
     });
@@ -146,7 +144,7 @@ const App: React.FC = () => {
     setJobs(prev => prev.map(job => job.id === jobId ? { ...job, ...updates } : job));
   };
   
-  const updateJobFromResult = (jobId: string, type: 'catalog' | 'thematic' | 'video', status: JobStatus, data: any) => {
+  const updateJobFromResult = (jobId: string, type: 'catalog' | 'thematic' | 'video' | 'banner', status: JobStatus, data: any) => {
     setJobs(prevJobs => prevJobs.map(job => {
         if (job.id === jobId) {
             const updatedJob = { ...job };
@@ -156,6 +154,8 @@ const App: React.FC = () => {
                 updatedJob.thematicResult = { images: data.images || [], status };
             } else if (type === 'video') {
                  updatedJob.videoResult = { ...updatedJob.videoResult, ...data, status };
+            } else if (type === 'banner') {
+                 updatedJob.bannerResult = { image: data.image || null, status };
             }
             return updatedJob;
         }
@@ -166,7 +166,8 @@ const App: React.FC = () => {
   const isAnyJobLoading = jobs.some(j => 
     j.catalogResult.status === 'loading' || 
     j.thematicResult.status === 'loading' || 
-    j.videoResult.status === 'loading'
+    j.videoResult.status === 'loading' ||
+    j.bannerResult.status === 'loading'
   );
 
   const stopAllGenerations = () => {
@@ -174,7 +175,7 @@ const App: React.FC = () => {
     // The fetch calls will throw an error which will be caught, setting the status to 'error'
   };
   
-  const createApiCall = async (endpoint: string, job: Job, body: object, type: 'catalog' | 'thematic' | 'video') => {
+  const createApiCall = async (endpoint: string, job: Job, body: object, type: 'catalog' | 'thematic' | 'video' | 'banner') => {
       try {
         const response = await fetch(endpoint, {
             method: 'POST',
@@ -196,9 +197,17 @@ const App: React.FC = () => {
           if (err.name === 'AbortError') {
               console.log(`Request for job ${job.id} was aborted.`);
               // Reset status to pending or keep as error
-              const currentStatus = jobs.find(j=>j.id === job.id)?.catalogResult.status;
-              if (currentStatus === 'loading') {
-                updateJobFromResult(job.id, type, 'pending', {});
+              const currentJob = jobs.find(j=>j.id === job.id);
+              if (currentJob) {
+                let currentStatus;
+                if (type === 'catalog') currentStatus = currentJob.catalogResult.status;
+                if (type === 'thematic') currentStatus = currentJob.thematicResult.status;
+                if (type === 'video') currentStatus = currentJob.videoResult.status;
+                if (type === 'banner') currentStatus = currentJob.bannerResult.status;
+                
+                if (currentStatus === 'loading') {
+                  updateJobFromResult(job.id, type, 'pending', {});
+                }
               }
           } else {
               updateJobFromResult(job.id, type, 'error', { error: err.message });
@@ -229,6 +238,18 @@ const App: React.FC = () => {
         theme 
       }, 'thematic');
     });
+  };
+  
+  const handleGenerateBanner = (job: Job, sourceImageBase64: string, promoText: string) => {
+    if (!sourceImageBase64 || !promoText) {
+        console.error("Source image or promo text is missing for banner generation.");
+        return;
+    }
+    updateJobFromResult(job.id, 'banner', 'loading', {});
+    createApiCall('/api/banner', job, { 
+        base64Image: sourceImageBase64,
+        promoText: promoText
+    }, 'banner');
   };
 
   const pollVideoStatus = useCallback((operation: any, job: Job) => {
@@ -406,7 +427,7 @@ const App: React.FC = () => {
                 <h2 className="text-2xl font-bold mb-4 text-center">Resultados Generados</h2>
                  {jobs.length > 0 ? (
                     <div className="space-y-8">
-                        {jobs.map(job => <ResultCard key={job.id} job={job} />)}
+                        {jobs.map(job => <ResultCard key={job.id} job={job} onGenerateBanner={handleGenerateBanner} />)}
                     </div>
                 ) : (
                     <div className="text-center py-10 px-6 bg-white rounded-xl shadow-lg">
@@ -423,7 +444,9 @@ const App: React.FC = () => {
 };
 
 
-const ResultCard: React.FC<{ job: Job }> = ({ job }) => {
+const ResultCard: React.FC<{ job: Job, onGenerateBanner: (job: Job, source: string, text: string) => void }> = ({ job, onGenerateBanner }) => {
+    const [selectedThematicIndex, setSelectedThematicIndex] = useState(0);
+    const [promoText, setPromoText] = useState('NUEVA COLECCIÓN');
     
     const downloadImage = (base64: string, filename: string) => {
         const link = document.createElement('a');
@@ -433,6 +456,13 @@ const ResultCard: React.FC<{ job: Job }> = ({ job }) => {
         link.click();
         document.body.removeChild(link);
     };
+    
+    const handleBannerGeneration = () => {
+        const sourceImage = job.thematicResult.images[selectedThematicIndex];
+        if (sourceImage) {
+            onGenerateBanner(job, sourceImage, promoText);
+        }
+    }
 
     const renderResultGroup = (title: string, result: { images: string[], status: JobStatus }, type: 'catalog' | 'thematic') => (
         <div>
@@ -472,7 +502,69 @@ const ResultCard: React.FC<{ job: Job }> = ({ job }) => {
             <div className="space-y-6">
                 {renderResultGroup('Catálogo', job.catalogResult, 'catalog')}
                 {renderResultGroup('Temporada', job.thematicResult, 'thematic')}
-                {/* Video results can be added here in a similar fashion */}
+                
+                {job.thematicResult.status === 'success' && job.thematicResult.images.length > 0 && (
+                    <div className="pt-6 border-t border-slate-200">
+                        <div className="flex items-center gap-3">
+                            <TagIcon className="w-7 h-7 text-purple-600" />
+                            <h4 className="text-lg font-semibold text-slate-800">Banner Promocional</h4>
+                        </div>
+                        <p className="text-sm text-slate-500 mt-1">Selecciona una imagen de temporada y añade texto para crear un banner para redes sociales o tu tienda.</p>
+                        
+                        <div className="mt-4">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">1. Selecciona una imagen base</label>
+                            <div className="flex gap-2 overflow-x-auto pb-2">
+                                {job.thematicResult.images.map((img, index) => (
+                                    <img 
+                                      key={index}
+                                      src={`data:image/jpeg;base64,${img}`} 
+                                      alt={`Opción temática ${index + 1}`} 
+                                      onClick={() => setSelectedThematicIndex(index)}
+                                      className={`w-24 h-24 object-cover rounded-md cursor-pointer border-4 transition-all ${selectedThematicIndex === index ? 'border-indigo-500' : 'border-transparent hover:border-slate-300'}`}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mt-4">
+                             <label htmlFor={`promo-text-${job.id}`} className="block text-sm font-medium text-slate-700 mb-1">2. Escribe tu texto promocional</label>
+                             <input
+                                id={`promo-text-${job.id}`}
+                                type="text"
+                                value={promoText}
+                                onChange={(e) => setPromoText(e.target.value)}
+                                disabled={job.bannerResult.status === 'loading'}
+                                placeholder="Ej: 20% OFF, Envío Gratis"
+                                className="w-full text-sm px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-50"
+                              />
+                        </div>
+
+                        <button onClick={handleBannerGeneration} disabled={job.bannerResult.status === 'loading' || !promoText} className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md font-semibold hover:bg-purple-700 disabled:bg-purple-300 disabled:cursor-not-allowed transition-colors">
+                            <SparklesIcon className="w-5 h-5" />
+                            <span>Generar Banner</span>
+                        </button>
+
+                        {job.bannerResult.status !== 'pending' && (
+                            <div className="mt-4">
+                                <h5 className="font-semibold text-sm">Resultado del Banner:</h5>
+                                {job.bannerResult.status === 'loading' && <div className="mt-2 aspect-square max-w-xs bg-slate-200 rounded-lg animate-pulse"></div>}
+                                {job.bannerResult.status === 'error' && <p className="text-sm text-red-600 mt-2">Hubo un error al generar el banner.</p>}
+                                {job.bannerResult.status === 'success' && job.bannerResult.image && (
+                                    <div className="relative group aspect-square mt-2 max-w-xs">
+                                        <img src={`data:image/jpeg;base64,${job.bannerResult.image}`} alt="Banner promocional" className="w-full h-full object-cover rounded-lg shadow-md" />
+                                        <button
+                                            onClick={() => downloadImage(job.bannerResult.image!, `${job.originalImage.file.name.split('.')[0]}-banner.jpg`)}
+                                            className="absolute top-2 right-2 p-1.5 bg-black bg-opacity-50 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                            title="Descargar banner"
+                                        >
+                                            <DownloadIcon className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
